@@ -257,11 +257,9 @@ fn build_chat_stream(
                 .await;
         }
 
-        let current_message = message;
-        let mut is_first_turn = true;
-        let mut pending_input_summary: Option<String> = None;
-        // Last 2 messages from the outgoing agent, passed as seed context on handoff.
-        let mut handoff_seed: Vec<Message> = Vec::new();
+        let raw_message = message.clone();
+        // current_prompt starts as the user's message and is rebuilt on each handoff.
+        let mut current_prompt = message;
 
         'handoff: for _ in 0..max_handoffs {
             let agent = match deps.agents.get(&current_agent_name) {
@@ -273,25 +271,13 @@ fn build_chat_stream(
                 .event("agent_started")
                 .data(current_agent_name.clone())));
 
-            let input_text = if is_first_turn {
-                is_first_turn = false;
-                current_message.clone()
-            } else {
-                match pending_input_summary.take() {
-                    Some(s) => s,
-                    None => current_message.clone(),
-                }
-            };
-
             // Each agent has its own isolated conversation history.
             let agent_conv_key = format!("{conversation_id}::{current_agent_name}");
-            let mut agent_history: Vec<Message> = deps
+            let agent_history: Vec<Message> = deps
                 .conv_store
                 .load(&agent_conv_key)
                 .await
                 .unwrap_or_default();
-            // Append the handoff seed (last 2 msgs from the previous agent).
-            agent_history.extend(handoff_seed.drain(..));
 
             let mut ctx_state = HashMap::new();
             ctx_state.insert(
@@ -318,8 +304,11 @@ fn build_chat_stream(
             .with_extensions(deps.extensions.clone())
             .build();
 
-            let mut agent_stream =
-                AgentExecutor::run_stream(Arc::clone(&agent), Message::user(input_text), ctx);
+            let mut agent_stream = AgentExecutor::run_stream(
+                Arc::clone(&agent),
+                Message::user(current_prompt.clone()),
+                ctx,
+            );
 
             let mut done = false;
             let mut completed_history: Vec<Message> = Vec::new();
@@ -337,20 +326,11 @@ fn build_chat_stream(
                 break;
             }
 
-            // Save this agent's conversation under its own key.
+            // Save this agent's conversation under its own isolated key.
             let _ = deps
                 .conv_store
                 .save(&agent_conv_key, &completed_history)
                 .await;
-
-            // Prepare handoff seed: last 2 messages from this agent's conversation.
-            handoff_seed = completed_history
-                .iter()
-                .rev()
-                .take(2)
-                .rev()
-                .cloned()
-                .collect();
 
             let new_agent = deps
                 .active_agent_store
@@ -363,17 +343,32 @@ fn build_chat_stream(
                         .get_and_clear_summary(&conversation_id)
                         .await
                         .unwrap_or_default();
-                    if !handoff_summary.is_empty() {
-                        pending_input_summary = Some(handoff_summary.clone());
-                    }
+
                     deps.signal_bus.emit(AppSignal::AgentHandoff {
                         from_agent: current_agent_name.clone(),
                         to_agent: name.clone(),
-                        summary: handoff_summary,
+                        summary: handoff_summary.clone(),
                         conversation_id: conversation_id.clone(),
                     });
                     let _ =
                         tx.unbounded_send(Ok(Event::default().event("break").data(name.clone())));
+
+                    // Reconstruct the prompt for the next agent.
+                    // Authenticated: structured handoff context + original request.
+                    // Public: summary only, falling back to original message.
+                    current_prompt = if !handoff_summary.is_empty() {
+                        if user_id.is_some() {
+                            format!(
+                                "[HANDOFF from {}]: {}\n\n[ORIGINAL REQUEST]: {}",
+                                current_agent_name, handoff_summary, raw_message
+                            )
+                        } else {
+                            handoff_summary
+                        }
+                    } else {
+                        raw_message.clone()
+                    };
+
                     current_agent_name = name;
                 }
                 _ => break 'handoff,
