@@ -13,7 +13,7 @@ use crate::tools::check_auth::CheckAuthenticationTool;
 
 /// The disputes agent — handles transaction disputes and chargebacks.
 #[agent(
-    name = "disputes",
+    name = "Banking Disputes Agent",
     description = "You are Lauren, a banking disputes specialist. You help authenticated users \
                    with transaction disputes and chargebacks. You can check account balances \
                    and transaction history to investigate disputed charges. Always gather \

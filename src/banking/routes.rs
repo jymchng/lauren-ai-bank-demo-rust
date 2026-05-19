@@ -1,31 +1,47 @@
 use axum::extract::{Path, State};
 use axum::Json;
+use serde::Serialize;
 use std::sync::Arc;
 
 use crate::banking::db::BankDatabase;
-use crate::banking::models::{BankAccount, Transaction};
+use crate::banking::models::{BankAccount, BankAccountDetail, Transaction};
 use crate::error::AppError;
 use crate::AppState;
+
+/// Response wrapper for the accounts list — matches Python `{"accounts": [...]}`.
+#[derive(Serialize)]
+pub struct ListAccountsResponse {
+    pub accounts: Vec<BankAccount>,
+}
 
 /// List all bank accounts.
 pub async fn list_accounts(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<BankAccount>>, AppError> {
+) -> Result<Json<ListAccountsResponse>, AppError> {
     let accounts = state.bank_db.list_accounts().await;
-    Ok(Json(accounts))
+    Ok(Json(ListAccountsResponse { accounts }))
 }
 
-/// Get a specific account by user_id.
+/// Get a specific account with embedded transaction history.
 pub async fn get_account(
     State(state): State<Arc<AppState>>,
     Path(user_id): Path<String>,
-) -> Result<Json<BankAccount>, AppError> {
-    state
+) -> Result<Json<BankAccountDetail>, AppError> {
+    let account = state
         .bank_db
         .get_account(&user_id)
         .await
-        .map(Json)
-        .ok_or_else(|| AppError::NotFound(format!("Account {} not found", user_id)))
+        .ok_or_else(|| AppError::NotFound(format!("Account {} not found", user_id)))?;
+    let transactions = state.bank_db.get_transactions(&user_id).await;
+    let transaction_views = transactions.iter().map(|tx| tx.to_view(&user_id)).collect();
+    Ok(Json(BankAccountDetail {
+        user_id: account.user_id,
+        name: account.name,
+        account_id: account.account_id,
+        balance: account.balance,
+        avatar_color: account.avatar_color,
+        transactions: transaction_views,
+    }))
 }
 
 /// Get transactions for a user.
@@ -110,9 +126,10 @@ mod tests {
         let state = crate::test_utils::create_test_state().await;
         let result = get_account(axum::extract::State(state), Path("alice".to_string())).await;
         assert!(result.is_ok());
-        let account = result.unwrap();
-        assert_eq!(account.user_id, "alice");
-        assert_eq!(account.balance, 5000.0);
+        let detail = result.unwrap();
+        assert_eq!(detail.user_id, "alice");
+        assert_eq!(detail.balance, 5000.0);
+        assert!(detail.transactions.is_empty());
     }
 
     #[tokio::test]
@@ -127,8 +144,8 @@ mod tests {
         let state = crate::test_utils::create_test_state().await;
         let result = list_accounts(axum::extract::State(state)).await;
         assert!(result.is_ok());
-        let accounts = result.unwrap();
-        assert_eq!(accounts.len(), 3);
+        let resp = result.unwrap();
+        assert_eq!(resp.accounts.len(), 3);
     }
 
     #[tokio::test]

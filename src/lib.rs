@@ -69,10 +69,12 @@ impl AppState {
     /// Get an agent arc by logical name.
     pub fn get_agent_by_name(&self, name: &str) -> Option<Arc<dyn Agent>> {
         match name {
-            "unauthenticated_crm" => Some(Arc::clone(&self.unauth_agent) as Arc<dyn Agent>),
-            "authenticated_crm" => Some(Arc::clone(&self.auth_agent) as Arc<dyn Agent>),
-            "bank_transfer" => Some(Arc::clone(&self.transfer_agent) as Arc<dyn Agent>),
-            "disputes" => Some(Arc::clone(&self.disputes_agent) as Arc<dyn Agent>),
+            "Banking CRM Agent (Public)" => Some(Arc::clone(&self.unauth_agent) as Arc<dyn Agent>),
+            "Banking CRM Agent (Authenticated)" => {
+                Some(Arc::clone(&self.auth_agent) as Arc<dyn Agent>)
+            }
+            "Banking Transfer Agent" => Some(Arc::clone(&self.transfer_agent) as Arc<dyn Agent>),
+            "Banking Disputes Agent" => Some(Arc::clone(&self.disputes_agent) as Arc<dyn Agent>),
             _ => None,
         }
     }

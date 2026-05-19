@@ -8,7 +8,7 @@ pub async fn health() -> Json<Value> {
 
 /// Create the health router.
 pub fn health_router() -> axum::Router<std::sync::Arc<crate::AppState>> {
-    axum::Router::new().route("/api/health/", axum::routing::get(health))
+    axum::Router::new().route("/api/health", axum::routing::get(health))
 }
 
 #[cfg(test)]
@@ -25,7 +25,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/health/")
+                    .uri("/api/health")
                     .body(Body::empty())
                     .unwrap(),
             )

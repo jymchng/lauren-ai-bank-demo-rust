@@ -3,7 +3,9 @@ use std::sync::Arc;
 use agtrs::prelude::*;
 use injectable::prelude::*;
 
+use crate::approval::service::ApprovalService;
 use crate::banking::db::BankDatabase;
+use crate::signals::bus::{AppSignal, AppSignalBus};
 
 // ── GetBalanceTool ────────────────────────────────────────────────────────────
 
@@ -58,6 +60,10 @@ impl GetBalanceTool {
 pub struct TransferFundsTool {
     #[injectable(inject)]
     db: Arc<BankDatabase>,
+    #[injectable(inject)]
+    approval_svc: Arc<ApprovalService>,
+    #[injectable(inject)]
+    signal_bus: Arc<AppSignalBus>,
 }
 
 #[tool(name = "transfer_funds", requires_confirmation = true)]
@@ -103,18 +109,20 @@ impl TransferFundsTool {
             ));
         }
 
-        let approved = ctx
+        let conv_id = ctx
             .state
-            .get("transfer_approved")
-            .and_then(|v| v.as_object())
-            .map(|obj| {
-                let ok_to = obj.get("to_user").and_then(|v| v.as_str()).unwrap_or("");
-                let ok_amount = obj.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let consumed = obj
-                    .get("consumed")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
-                ok_to == to_user && (ok_amount - amount).abs() < 0.01 && !consumed
+            .get("conversation_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let token = self.approval_svc.get_approved_transfer(&conv_id).await;
+        let approved = token
+            .as_ref()
+            .map(|t| {
+                let ok_to = t.get("to_user").and_then(|v| v.as_str()).unwrap_or("");
+                let ok_amount = t.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                ok_to == to_user && (ok_amount - amount).abs() < 0.01
             })
             .unwrap_or(false);
 
@@ -126,10 +134,21 @@ impl TransferFundsTool {
         }
 
         match self.db.transfer(auth_uid, &to_user, amount).await {
-            Ok(tx) => Ok(ToolResult::ok(
-                format!("Transfer successful: {}", tx.description),
-                &ctx.tool_use_id,
-            )),
+            Ok(tx) => {
+                let from_balance = self.db.get_balance(auth_uid).await.unwrap_or(0.0);
+                let to_balance = self.db.get_balance(&to_user).await.unwrap_or(0.0);
+                self.signal_bus.emit(AppSignal::BalanceChanged {
+                    from_user: auth_uid.to_string(),
+                    to_user: to_user.clone(),
+                    amount,
+                    from_balance,
+                    to_balance,
+                });
+                Ok(ToolResult::ok(
+                    format!("Transfer successful: {}", tx.description),
+                    &ctx.tool_use_id,
+                ))
+            }
             Err(e) => Ok(ToolResult::error(
                 format!("Transfer failed: {}", e),
                 &ctx.tool_use_id,
@@ -199,11 +218,20 @@ impl GetTransactionHistoryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signals::bus::AppSignalBus;
     use injectable_runtime::{EmptySingletonStore, ResolveContext};
     use serde_json::json;
 
     fn make_db() -> Arc<BankDatabase> {
         Arc::new(BankDatabase::new())
+    }
+
+    fn make_approval_svc() -> Arc<ApprovalService> {
+        Arc::new(ApprovalService::new(Arc::new(AppSignalBus::new())))
+    }
+
+    fn make_signal_bus() -> Arc<AppSignalBus> {
+        Arc::new(AppSignalBus::new())
     }
 
     fn make_ctx(user_id: &str) -> ToolContext {
@@ -212,18 +240,25 @@ mod tests {
         if !user_id.is_empty() {
             ctx.state.insert("user_id".into(), json!(user_id));
         }
+        ctx.state
+            .insert("conversation_id".into(), json!("test-conv"));
         ctx
     }
 
-    fn make_ctx_with_approval(user_id: &str, to_user: &str, amount: f64) -> ToolContext {
-        let mut ctx = make_ctx(user_id);
-        ctx.state.insert(
-            "transfer_approved".into(),
-            json!({
-                "to_user": to_user, "amount": amount, "consumed": false
-            }),
-        );
-        ctx
+    async fn make_transfer_tool_with_approval(
+        to_user: &str,
+        amount: f64,
+    ) -> (TransferFundsTool, ToolContext) {
+        let approval_svc = make_approval_svc();
+        approval_svc
+            .mark_approved("test-conv", &json!({"to_user": to_user, "amount": amount}))
+            .await;
+        let tool = TransferFundsTool {
+            db: make_db(),
+            approval_svc,
+            signal_bus: make_signal_bus(),
+        };
+        (tool, make_ctx("alice"))
     }
 
     // ── GetBalanceTool ──────────────────────────────────────────────────────
@@ -272,7 +307,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_transfer_funds_without_approval() {
-        let tool = TransferFundsTool { db: make_db() };
+        let tool = TransferFundsTool {
+            db: make_db(),
+            approval_svc: make_approval_svc(),
+            signal_bus: make_signal_bus(),
+        };
         let ctx = make_ctx("alice");
         let result = tool
             .call(
@@ -287,8 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_transfer_funds_with_approval() {
-        let tool = TransferFundsTool { db: make_db() };
-        let ctx = make_ctx_with_approval("alice", "bob", 100.0);
+        let (tool, ctx) = make_transfer_tool_with_approval("bob", 100.0).await;
         let result = tool
             .call(
                 json!({"user_id": "alice", "to_user": "bob", "amount": 100}),
@@ -302,7 +340,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_transfer_funds_unauthenticated() {
-        let tool = TransferFundsTool { db: make_db() };
+        let tool = TransferFundsTool {
+            db: make_db(),
+            approval_svc: make_approval_svc(),
+            signal_bus: make_signal_bus(),
+        };
         let ctx = make_ctx("");
         let result = tool
             .call(
@@ -317,7 +359,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_transfer_funds_mismatched_user_id() {
-        let tool = TransferFundsTool { db: make_db() };
+        let tool = TransferFundsTool {
+            db: make_db(),
+            approval_svc: make_approval_svc(),
+            signal_bus: make_signal_bus(),
+        };
         let ctx = make_ctx("alice");
         let result = tool
             .call(
@@ -364,6 +410,8 @@ mod tests {
     #[test]
     fn test_tool_names_and_schemas() {
         let db = make_db();
+        let approval_svc = make_approval_svc();
+        let signal_bus = make_signal_bus();
 
         let balance_tool = GetBalanceTool {
             db: Arc::clone(&db),
@@ -376,6 +424,8 @@ mod tests {
 
         let transfer_tool = TransferFundsTool {
             db: Arc::clone(&db),
+            approval_svc: Arc::clone(&approval_svc),
+            signal_bus: Arc::clone(&signal_bus),
         };
         assert_eq!(transfer_tool.name(), "transfer_funds");
         assert!(transfer_tool.requires_confirmation());

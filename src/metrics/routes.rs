@@ -57,7 +57,7 @@ pub async fn cost(State(state): State<Arc<AppState>>) -> Json<Value> {
 /// Create the metrics router.
 pub fn metrics_router() -> axum::Router<Arc<AppState>> {
     axum::Router::new()
-        .route("/api/metrics/", axum::routing::get(summary))
+        .route("/api/metrics", axum::routing::get(summary))
         .route("/api/metrics/traces", axum::routing::get(traces))
         .route("/api/metrics/cost", axum::routing::get(cost))
 }
@@ -77,7 +77,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/metrics/")
+                    .uri("/api/metrics")
                     .body(Body::empty())
                     .unwrap(),
             )

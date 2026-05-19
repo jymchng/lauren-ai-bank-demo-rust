@@ -1,95 +1,47 @@
-//! Chat request/response schemas and SSE event types.
+//! Chat request/response schemas.
 
 use serde::{Deserialize, Serialize};
 
-/// Chat request body.
+/// A single message in a conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// Chat request body — matches Python ChatRequest schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
-    /// The user's message.
-    pub message: String,
-    /// The conversation ID (for session continuity).
+    /// Conversation history; last user message is the current input.
+    pub messages: Vec<ChatMessage>,
+    /// LLM model hint (informational; Rust uses its configured model).
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Conversation ID for session continuity.
     pub conversation_id: Option<String>,
     /// Optional user ID (for authenticated requests).
     pub user_id: Option<String>,
 }
 
+impl ChatRequest {
+    /// Extract the content of the last user message.
+    pub fn last_user_message(&self) -> String {
+        self.messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .last()
+            .map(|m| m.content.clone())
+            .unwrap_or_default()
+    }
+}
+
 /// Chat response body (for non-streaming).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
-    /// The assistant's response.
     pub response: String,
-    /// The conversation ID.
     pub conversation_id: String,
-    /// The agent that handled the request.
     pub agent_name: String,
-    /// Number of turns executed.
     pub turns: usize,
-}
-
-/// SSE event types for streaming responses.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum SseEvent {
-    /// A text delta from the agent.
-    #[serde(rename = "text_delta")]
-    TextDelta {
-        /// Incremental text content.
-        delta: String,
-    },
-    /// A tool is being executed.
-    #[serde(rename = "tool_execution")]
-    ToolExecution {
-        /// The tool name.
-        tool_name: String,
-    },
-    /// The agent is switching to another agent.
-    #[serde(rename = "agent_handoff")]
-    AgentHandoff {
-        /// The source agent.
-        from: String,
-        /// The target agent.
-        to: String,
-        /// Handoff summary.
-        summary: String,
-    },
-    /// A tool finished executing.
-    #[serde(rename = "tool_result")]
-    ToolResult {
-        /// The tool use ID.
-        tool_use_id: String,
-        /// The result content.
-        content: String,
-        /// Whether this is an error result.
-        is_error: bool,
-    },
-    /// The agent needs approval for an action.
-    #[serde(rename = "pending_approval")]
-    PendingApproval {
-        /// Description of the action.
-        action: String,
-    },
-    /// A guardrail modified the response.
-    #[serde(rename = "guardrail_override")]
-    GuardrailOverride {
-        /// Modified message content.
-        message: String,
-    },
-    /// The response is complete.
-    #[serde(rename = "done")]
-    Done {
-        /// Final response content.
-        content: String,
-        /// The conversation ID.
-        conversation_id: String,
-        /// Number of turns.
-        turns: usize,
-    },
-    /// An error occurred.
-    #[serde(rename = "error")]
-    Error {
-        /// Error message.
-        message: String,
-    },
 }
 
 #[cfg(test)]
@@ -98,11 +50,26 @@ mod tests {
 
     #[test]
     fn test_chat_request_deserialization() {
-        let json =
-            r#"{"message":"What's my balance?","conversation_id":"conv-1","user_id":"user-123"}"#;
+        let json = r#"{"messages":[{"role":"user","content":"What's my balance?"}],"conversation_id":"conv-1","user_id":"user-123"}"#;
         let req: ChatRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.message, "What's my balance?");
+        assert_eq!(req.last_user_message(), "What's my balance?");
         assert_eq!(req.conversation_id, Some("conv-1".into()));
+    }
+
+    #[test]
+    fn test_chat_request_optional_fields() {
+        let json = r#"{"messages":[{"role":"user","content":"hello"}]}"#;
+        let req: ChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.last_user_message(), "hello");
+        assert!(req.conversation_id.is_none());
+        assert!(req.user_id.is_none());
+    }
+
+    #[test]
+    fn test_last_user_message_picks_last() {
+        let json = r#"{"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"reply"},{"role":"user","content":"second"}]}"#;
+        let req: ChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.last_user_message(), "second");
     }
 
     #[test]
@@ -110,37 +77,10 @@ mod tests {
         let resp = ChatResponse {
             response: "Your balance is $5,000.".into(),
             conversation_id: "conv-1".into(),
-            agent_name: "authenticated_crm".into(),
+            agent_name: "Banking CRM Agent (Authenticated)".into(),
             turns: 2,
         };
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("authenticated_crm"));
-    }
-
-    #[test]
-    fn test_sse_event_serialization() {
-        let event = SseEvent::TextDelta {
-            delta: "Hello".into(),
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("text_delta"));
-
-        let event = SseEvent::Done {
-            content: "Done".into(),
-            conversation_id: "conv-1".into(),
-            turns: 3,
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("done"));
-    }
-
-    #[test]
-    fn test_sse_event_deserialization() {
-        let json = r#"{"type":"error","message":"Something went wrong"}"#;
-        let event: SseEvent = serde_json::from_str(json).unwrap();
-        match event {
-            SseEvent::Error { message } => assert_eq!(message, "Something went wrong"),
-            _ => panic!("Wrong event type"),
-        }
+        assert!(json.contains("Banking CRM Agent (Authenticated)"));
     }
 }

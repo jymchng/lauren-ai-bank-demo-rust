@@ -92,15 +92,40 @@ impl Tool for ApprovalTool {
             )
             .await;
 
+        let to_user = details
+            .get("to_user")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let amount_usd = details
+            .get("amount")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let description = details
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&action_type)
+            .to_string();
+        let created_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
         signal_bus.emit(crate::signals::bus::AppSignal::ToolPendingApproval {
+            approval_id: conversation_id.clone(),
+            from_user: auth_uid.clone(),
+            to_user,
+            amount_usd,
+            description,
             conversation_id: conversation_id.clone(),
-            action_type: action_type.clone(),
-            details,
+            created_at_ms,
         });
 
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(true)) => {
-                approval_service.mark_approved(&conversation_id, &details_clone);
+                approval_service
+                    .mark_approved(&conversation_id, &details_clone)
+                    .await;
                 Ok(ToolResult::ok(
                     "Approval granted. You may proceed with the action.",
                     &ctx.tool_use_id,

@@ -41,9 +41,21 @@ async fn collect_sse_events(response: axum::response::Response) -> Vec<serde_jso
     let text = String::from_utf8_lossy(&bytes);
     text.split("\n\n")
         .filter_map(|block| {
-            let data_line = block.lines().find(|l| l.starts_with("data:"))?;
-            let json_str = data_line.trim_start_matches("data:").trim();
-            serde_json::from_str(json_str).ok()
+            if block.trim().is_empty() {
+                return None;
+            }
+            let event_type = block
+                .lines()
+                .find(|l| l.starts_with("event:"))?
+                .trim_start_matches("event:")
+                .trim()
+                .to_string();
+            let data = block
+                .lines()
+                .find(|l| l.starts_with("data:"))
+                .map(|l| l.trim_start_matches("data:").trim().to_string())
+                .unwrap_or_default();
+            Some(serde_json::json!({"type": event_type, "data": data}))
         })
         .collect()
 }
@@ -65,7 +77,7 @@ async fn test_health_check() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/health/")
+                .uri("/api/health")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -91,8 +103,8 @@ async fn test_list_accounts_returns_non_empty_array() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(json.is_array());
-    assert!(!json.as_array().unwrap().is_empty());
+    assert!(json["accounts"].is_array());
+    assert!(!json["accounts"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -155,7 +167,7 @@ async fn test_get_metrics() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/metrics/")
+                .uri("/api/metrics")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -223,7 +235,7 @@ async fn test_chat_public_returns_200_with_sse_content_type() {
     let resp = app
         .oneshot(post_json(
             "/api/banking/chat/public",
-            serde_json::json!({"message": "Hello", "conversation_id": "ct-1"}),
+            serde_json::json!({"messages":[{"role":"user","content":"Hello"}],"conversation_id":"ct-1"}),
         ))
         .await
         .unwrap();
@@ -245,7 +257,7 @@ async fn test_chat_authenticated_without_user_id_returns_401() {
     let resp = app
         .oneshot(post_json(
             "/api/banking/chat",
-            serde_json::json!({"message": "hello"}),
+            serde_json::json!({"messages":[{"role":"user","content":"hello"}]}),
         ))
         .await
         .unwrap();
@@ -258,7 +270,7 @@ async fn test_chat_authenticated_with_user_id_returns_200_with_sse_content_type(
     let resp = app
         .oneshot(post_json(
             "/api/banking/chat",
-            serde_json::json!({"message": "hello", "user_id": "alice", "conversation_id": "ct-2"}),
+            serde_json::json!({"messages":[{"role":"user","content":"hello"}],"user_id":"alice","conversation_id":"ct-2"}),
         ))
         .await
         .unwrap();
@@ -284,7 +296,7 @@ async fn test_chat_public_emits_text_delta_and_done() {
     let resp = app
         .oneshot(post_json(
             "/api/banking/chat/public",
-            serde_json::json!({"message": "Who are you?", "conversation_id": "ev-1"}),
+            serde_json::json!({"messages":[{"role":"user","content":"Who are you?"}],"conversation_id":"ev-1"}),
         ))
         .await
         .unwrap();
@@ -293,7 +305,7 @@ async fn test_chat_public_emits_text_delta_and_done() {
     let events = collect_sse_events(resp).await;
     assert!(!events.is_empty());
     assert!(
-        events.iter().any(|e| e["type"] == "text_delta"),
+        events.iter().any(|e| e["type"] == "token"),
         "expected text_delta, got: {events:?}"
     );
     assert!(
@@ -310,14 +322,14 @@ async fn test_chat_authenticated_emits_text_delta_and_done() {
     let resp = app
         .oneshot(post_json(
             "/api/banking/chat",
-            serde_json::json!({"message": "balance?", "user_id": "alice", "conversation_id": "ev-2"}),
+            serde_json::json!({"messages":[{"role":"user","content":"balance?"}],"user_id":"alice","conversation_id":"ev-2"}),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     let events = collect_sse_events(resp).await;
-    assert!(events.iter().any(|e| e["type"] == "text_delta"));
+    assert!(events.iter().any(|e| e["type"] == "token"));
     assert!(events.iter().any(|e| e["type"] == "done"));
 }
 
@@ -329,7 +341,7 @@ async fn test_chat_text_delta_accumulates_correct_content() {
     let resp = app
         .oneshot(post_json(
             "/api/banking/chat/public",
-            serde_json::json!({"message": "say the marker", "conversation_id": "ev-3"}),
+            serde_json::json!({"messages":[{"role":"user","content":"say the marker"}],"conversation_id":"ev-3"}),
         ))
         .await
         .unwrap();
@@ -337,8 +349,8 @@ async fn test_chat_text_delta_accumulates_correct_content() {
     let events = collect_sse_events(resp).await;
     let full_text: String = events
         .iter()
-        .filter(|e| e["type"] == "text_delta")
-        .filter_map(|e| e["delta"].as_str())
+        .filter(|e| e["type"] == "token")
+        .filter_map(|e| e["data"].as_str())
         .collect();
     assert!(
         full_text.contains("UniqueResponseMarker99"),
@@ -354,17 +366,17 @@ async fn test_chat_done_event_has_positive_turns() {
     let resp = app
         .oneshot(post_json(
             "/api/banking/chat/public",
-            serde_json::json!({"message": "hi", "conversation_id": "ev-4"}),
+            serde_json::json!({"messages":[{"role":"user","content":"hi"}],"conversation_id":"ev-4"}),
         ))
         .await
         .unwrap();
 
     let events = collect_sse_events(resp).await;
-    let done = events
-        .iter()
-        .find(|e| e["type"] == "done")
-        .expect("no done event");
-    assert!(done["turns"].as_u64().unwrap_or(0) > 0, "turns must be > 0");
+    // done event is emitted (data is empty string in Python-compatible format)
+    assert!(
+        events.iter().any(|e| e["type"] == "done"),
+        "expected done event, got: {events:?}"
+    );
 }
 
 // ── Tool execution via SSE ────────────────────────────────────────────────────
@@ -384,7 +396,7 @@ async fn test_chat_emits_tool_execution_and_tool_result_events() {
         .oneshot(post_json(
             "/api/banking/chat",
             serde_json::json!({
-                "message": "What is my balance?",
+                "messages":[{"role":"user","content":"What is my balance?"}],
                 "user_id": "alice",
                 "conversation_id": "te-1"
             }),
@@ -395,12 +407,8 @@ async fn test_chat_emits_tool_execution_and_tool_result_events() {
 
     let events = collect_sse_events(resp).await;
     assert!(
-        events.iter().any(|e| e["type"] == "tool_execution"),
+        events.iter().any(|e| e["type"] == "tool_use"),
         "expected tool_execution, got: {events:?}"
-    );
-    assert!(
-        events.iter().any(|e| e["type"] == "tool_result"),
-        "expected tool_result, got: {events:?}"
     );
     assert!(
         events.iter().any(|e| e["type"] == "done"),
@@ -420,7 +428,7 @@ async fn test_chat_tool_execution_event_contains_tool_name() {
         .oneshot(post_json(
             "/api/banking/chat",
             serde_json::json!({
-                "message": "my balance",
+                "messages":[{"role":"user","content":"my balance"}],
                 "user_id": "alice",
                 "conversation_id": "te-2"
             }),
@@ -431,13 +439,14 @@ async fn test_chat_tool_execution_event_contains_tool_name() {
     let events = collect_sse_events(resp).await;
     let te = events
         .iter()
-        .find(|e| e["type"] == "tool_execution")
-        .expect("no tool_execution event");
-    assert_eq!(te["tool_name"].as_str(), Some("get_balance"));
+        .find(|e| e["type"] == "tool_use")
+        .expect("no tool_use event");
+    // In Python-compatible format the tool name is the event data
+    assert_eq!(te["data"].as_str(), Some("get_balance"));
 }
 
 #[tokio::test]
-async fn test_chat_tool_result_event_has_required_fields() {
+async fn test_chat_tool_use_event_emitted_before_done() {
     let (app, transport) = create_mock_llm_app().await;
     transport
         .queue_tool_call("get_balance", serde_json::json!({"user_id": "alice"}))
@@ -448,7 +457,7 @@ async fn test_chat_tool_result_event_has_required_fields() {
         .oneshot(post_json(
             "/api/banking/chat",
             serde_json::json!({
-                "message": "balance",
+                "messages":[{"role":"user","content":"balance"}],
                 "user_id": "alice",
                 "conversation_id": "te-3"
             }),
@@ -457,20 +466,18 @@ async fn test_chat_tool_result_event_has_required_fields() {
         .unwrap();
 
     let events = collect_sse_events(resp).await;
-    let tr = events
-        .iter()
-        .find(|e| e["type"] == "tool_result")
-        .expect("no tool_result event");
     assert!(
-        tr["tool_use_id"].is_string(),
-        "tool_use_id must be a string"
+        events.iter().any(|e| e["type"] == "tool_use"),
+        "expected tool_use event, got: {events:?}"
     );
-    assert!(tr["content"].is_string(), "content must be a string");
-    assert!(tr["is_error"].is_boolean(), "is_error must be a boolean");
+    assert!(
+        events.iter().any(|e| e["type"] == "done"),
+        "expected done event, got: {events:?}"
+    );
 }
 
 #[tokio::test]
-async fn test_chat_tool_result_contains_balance_for_alice() {
+async fn test_chat_token_events_contain_balance_text() {
     let (app, transport) = create_mock_llm_app().await;
     transport
         .queue_tool_call("get_balance", serde_json::json!({"user_id": "alice"}))
@@ -481,7 +488,7 @@ async fn test_chat_tool_result_contains_balance_for_alice() {
         .oneshot(post_json(
             "/api/banking/chat",
             serde_json::json!({
-                "message": "get balance",
+                "messages":[{"role":"user","content":"get balance"}],
                 "user_id": "alice",
                 "conversation_id": "te-4"
             }),
@@ -490,14 +497,14 @@ async fn test_chat_tool_result_contains_balance_for_alice() {
         .unwrap();
 
     let events = collect_sse_events(resp).await;
-    let tr = events
+    let full_text: String = events
         .iter()
-        .find(|e| e["type"] == "tool_result")
-        .expect("no tool_result event");
-    let content = tr["content"].as_str().unwrap_or("");
+        .filter(|e| e["type"] == "token")
+        .filter_map(|e| e["data"].as_str())
+        .collect();
     assert!(
-        content.contains("5000") || content.contains("error") || content.contains("Error"),
-        "tool_result content should contain balance or an error, got: {content}"
+        !full_text.is_empty(),
+        "expected token events after tool execution, got: {events:?}"
     );
 }
 
@@ -511,7 +518,7 @@ async fn test_chat_emits_error_event_when_llm_has_no_responses() {
     let resp = app
         .oneshot(post_json(
             "/api/banking/chat/public",
-            serde_json::json!({"message": "hi", "conversation_id": "err-1"}),
+            serde_json::json!({"messages":[{"role":"user","content":"hi"}],"conversation_id":"err-1"}),
         ))
         .await
         .unwrap();
@@ -823,26 +830,20 @@ async fn test_knowledge_tool_via_sse_emits_tool_result() {
     let resp = app
         .oneshot(post_json(
             "/api/banking/chat/public",
-            serde_json::json!({"message": "Tell me about savings accounts", "conversation_id": "kb-1"}),
+            serde_json::json!({"messages":[{"role":"user","content":"Tell me about savings accounts"}],"conversation_id":"kb-1"}),
         ))
         .await
         .unwrap();
 
     let events = collect_sse_events(resp).await;
     assert!(
-        events.iter().any(|e| e["type"] == "tool_execution"),
+        events.iter().any(|e| e["type"] == "tool_use"),
         "expected tool_execution"
     );
+    // knowledge tool was invoked (tool_use event) and the stream completed (done)
     assert!(
-        events.iter().any(|e| e["type"] == "tool_result"),
-        "expected tool_result"
-    );
-
-    // Tool result should contain knowledge base content (not an error)
-    let tr = events.iter().find(|e| e["type"] == "tool_result").unwrap();
-    assert!(
-        !tr["is_error"].as_bool().unwrap_or(true),
-        "knowledge tool must succeed"
+        events.iter().any(|e| e["type"] == "done"),
+        "expected done event, got: {events:?}"
     );
 }
 
@@ -1108,55 +1109,38 @@ async fn test_agent_context_state_propagated_to_tool_context() {
 // ── SSE schemas ───────────────────────────────────────────────────────────────
 
 #[test]
-fn test_sse_event_all_variants_round_trip() {
-    use lauren_chatbot::chat::schemas::SseEvent;
+fn test_sse_event_stream_event_maps_correctly() {
+    use agtrs::agtrs_runtime::streaming::StreamEvent;
+    use lauren_chatbot::chat::sse::stream_event_to_sse;
 
-    let variants: Vec<SseEvent> = vec![
-        SseEvent::TextDelta { delta: "hi".into() },
-        SseEvent::ToolExecution {
-            tool_name: "get_balance".into(),
-        },
-        SseEvent::AgentHandoff {
-            from: "a".into(),
-            to: "b".into(),
-            summary: "s".into(),
-        },
-        SseEvent::ToolResult {
-            tool_use_id: "tu1".into(),
-            content: "ok".into(),
+    assert!(stream_event_to_sse(&StreamEvent::TextDelta { delta: "hi".into() }).is_some());
+    assert!(stream_event_to_sse(&StreamEvent::ToolExecution {
+        tool_name: "t".into(),
+        tool_use_id: "u".into(),
+    })
+    .is_some());
+    assert!(stream_event_to_sse(&StreamEvent::Error {
+        message: "e".into()
+    })
+    .is_some());
+    // ToolResult is suppressed (not in Python format)
+    assert!(stream_event_to_sse(&StreamEvent::ToolResult {
+        result: agtrs::agtrs_runtime::tool::ToolResult {
+            tool_use_id: "u".into(),
+            content: "c".into(),
             is_error: false,
         },
-        SseEvent::PendingApproval {
-            action: "transfer".into(),
-        },
-        SseEvent::GuardrailOverride {
-            message: "modified".into(),
-        },
-        SseEvent::Done {
-            content: "done".into(),
-            conversation_id: "c1".into(),
-            turns: 2,
-        },
-        SseEvent::Error {
-            message: "oops".into(),
-        },
-    ];
-
-    for variant in variants {
-        let json = serde_json::to_string(&variant).expect("must serialize");
-        let back: SseEvent = serde_json::from_str(&json).expect("must deserialize");
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2, "round-trip must be stable");
-    }
+    })
+    .is_none());
 }
 
 #[test]
 fn test_chat_request_full_deserialization() {
     use lauren_chatbot::chat::schemas::ChatRequest;
 
-    let full = r#"{"message":"hello","conversation_id":"c1","user_id":"alice"}"#;
+    let full = r#"{"messages":[{"role":"user","content":"hello"}],"conversation_id":"c1","user_id":"alice"}"#;
     let req: ChatRequest = serde_json::from_str(full).unwrap();
-    assert_eq!(req.message, "hello");
+    assert_eq!(req.last_user_message(), "hello");
     assert_eq!(req.conversation_id, Some("c1".into()));
     assert_eq!(req.user_id, Some("alice".into()));
 }
@@ -1165,9 +1149,9 @@ fn test_chat_request_full_deserialization() {
 fn test_chat_request_minimal_deserialization() {
     use lauren_chatbot::chat::schemas::ChatRequest;
 
-    let minimal = r#"{"message":"hi"}"#;
+    let minimal = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
     let req: ChatRequest = serde_json::from_str(minimal).unwrap();
-    assert_eq!(req.message, "hi");
+    assert_eq!(req.last_user_message(), "hi");
     assert!(req.conversation_id.is_none());
     assert!(req.user_id.is_none());
 }

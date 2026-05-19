@@ -14,7 +14,7 @@ use crate::tools::check_auth::CheckAuthenticationTool;
 
 /// The bank transfer agent — handles fund transfers with approval workflow.
 #[agent(
-    name = "bank_transfer",
+    name = "Banking Transfer Agent",
     description = "You are Lauren, a banking transfer specialist. You help authenticated users \
                    with fund transfers between accounts. All transfers require user approval \
                    before execution. Always confirm transfer details before proceeding. \

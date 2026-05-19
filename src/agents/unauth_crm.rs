@@ -13,7 +13,7 @@ use crate::tools::knowledge_tool::SearchPublicInfoTool;
 
 /// The unauthenticated CRM agent — handles public inquiries and authentication.
 #[agent(
-    name = "unauthenticated_crm",
+    name = "Banking CRM Agent (Public)",
     description = "You are Lauren, a friendly banking assistant for unauthenticated users. \
                    Your role is to help users with general banking questions and guide them \
                    through authentication. You can check if a user is authenticated and \

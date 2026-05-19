@@ -51,10 +51,12 @@ impl Tool for HandoffToCrmTool {
             .get("conversation_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
-        store.set_active_agent(conv_id, "AuthenticatedCRM").await;
+        store
+            .set_active_agent(conv_id, "Banking CRM Agent (Authenticated)")
+            .await;
         store.set_pending_summary(conv_id, &reason).await;
         Ok(ToolResult::ok(
-            format!("Handed off to Authenticated CRM: {reason}"),
+            format!("Handed off to Banking CRM Agent (Authenticated): {reason}"),
             &ctx.tool_use_id,
         ))
     }
@@ -93,10 +95,12 @@ impl Tool for HandoffToTransferTool {
             .get("conversation_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
-        store.set_active_agent(conv_id, "BankTransfer").await;
+        store
+            .set_active_agent(conv_id, "Banking Transfer Agent")
+            .await;
         store.set_pending_summary(conv_id, &reason).await;
         Ok(ToolResult::ok(
-            format!("Handed off to Bank Transfer: {reason}"),
+            format!("Handed off to Banking Transfer Agent: {reason}"),
             &ctx.tool_use_id,
         ))
     }
@@ -135,10 +139,12 @@ impl Tool for HandoffToDisputesTool {
             .get("conversation_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
-        store.set_active_agent(conv_id, "Disputes").await;
+        store
+            .set_active_agent(conv_id, "Banking Disputes Agent")
+            .await;
         store.set_pending_summary(conv_id, &reason).await;
         Ok(ToolResult::ok(
-            format!("Handed off to Disputes: {reason}"),
+            format!("Handed off to Banking Disputes Agent: {reason}"),
             &ctx.tool_use_id,
         ))
     }
@@ -188,10 +194,12 @@ impl Tool for HandoffToAuthenticatedCrmTool {
             .get("conversation_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
-        store.set_active_agent(conv_id, "AuthenticatedCRM").await;
+        store
+            .set_active_agent(conv_id, "Banking CRM Agent (Authenticated)")
+            .await;
         store.set_pending_summary(conv_id, &reason).await;
         Ok(ToolResult::ok(
-            format!("Handed off to Authenticated CRM: {reason}"),
+            format!("Handed off to Banking CRM Agent (Authenticated): {reason}"),
             &ctx.tool_use_id,
         ))
     }
@@ -232,10 +240,10 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error);
-        assert!(result.content.contains("Authenticated CRM"));
+        assert!(result.content.contains("Banking CRM Agent (Authenticated)"));
         assert_eq!(
             store.get_active_agent("conv1").await,
-            Some("AuthenticatedCRM".into())
+            Some("Banking CRM Agent (Authenticated)".into())
         );
     }
 
@@ -250,7 +258,7 @@ mod tests {
         assert!(!result.is_error);
         assert_eq!(
             store.get_active_agent("conv1").await,
-            Some("BankTransfer".into())
+            Some("Banking Transfer Agent".into())
         );
     }
 
@@ -265,7 +273,7 @@ mod tests {
         assert!(!result.is_error);
         assert_eq!(
             store.get_active_agent("conv1").await,
-            Some("Disputes".into())
+            Some("Banking Disputes Agent".into())
         );
     }
 
@@ -280,7 +288,7 @@ mod tests {
         assert!(!result.is_error);
         assert_eq!(
             store.get_active_agent("conv1").await,
-            Some("AuthenticatedCRM".into())
+            Some("Banking CRM Agent (Authenticated)".into())
         );
     }
 

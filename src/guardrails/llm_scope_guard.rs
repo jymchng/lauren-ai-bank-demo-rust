@@ -13,17 +13,17 @@ use agtrs::agtrs_runtime::tool::ToolResult;
 /// Per-agent scope descriptions used by the LLM scope guard.
 pub const SCOPE_DESCRIPTIONS: &[(&str, &str)] = &[
     (
-        "authenticated_crm",
+        "Banking CRM Agent (Authenticated)",
         "Answering account balance inquiries, transaction history, and general account questions. \
          NOT: initiating transfers, handling disputes, or performing account modifications.",
     ),
     (
-        "bank_transfer",
+        "Banking Transfer Agent",
         "Initiating and executing fund transfers between accounts with proper approval. \
          NOT: handling disputes or general account inquiries beyond transfer context.",
     ),
     (
-        "disputes",
+        "Banking Disputes Agent",
         "Investigating and resolving transaction disputes and chargebacks. \
          NOT: initiating transfers or providing general banking advice beyond disputes.",
     ),
@@ -41,18 +41,18 @@ impl LlmScopeGuard {
     /// Create a new LLM scope guard for a specific agent.
     pub fn for_agent(agent_name: &str) -> Self {
         let keywords = match agent_name {
-            "authenticated_crm" => vec![
+            "Banking CRM Agent (Authenticated)" => vec![
                 "transfer funds".into(),
                 "initiate transfer".into(),
                 "dispute a charge".into(),
                 "file a dispute".into(),
             ],
-            "bank_transfer" => vec![
+            "Banking Transfer Agent" => vec![
                 "dispute a charge".into(),
                 "file a dispute".into(),
                 "investment advice".into(),
             ],
-            "disputes" => vec![
+            "Banking Disputes Agent" => vec![
                 "transfer funds".into(),
                 "initiate transfer".into(),
                 "investment advice".into(),
@@ -150,18 +150,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_scope_guard_passes_in_scope() {
-        let guard = LlmScopeGuard::for_agent("authenticated_crm");
+        let guard = LlmScopeGuard::for_agent("Banking CRM Agent (Authenticated)");
         let response = make_response("Your balance is $5,000.");
-        let ctx = GuardrailContext::new("authenticated_crm");
+        let ctx = GuardrailContext::new("Banking CRM Agent (Authenticated)");
         let decision = guard.check_output(&response, &ctx).await;
         assert!(decision.is_pass());
     }
 
     #[tokio::test]
     async fn test_scope_guard_blocks_out_of_scope() {
-        let guard = LlmScopeGuard::for_agent("authenticated_crm");
+        let guard = LlmScopeGuard::for_agent("Banking CRM Agent (Authenticated)");
         let response = make_response("I can help you transfer funds to another account.");
-        let ctx = GuardrailContext::new("authenticated_crm");
+        let ctx = GuardrailContext::new("Banking CRM Agent (Authenticated)");
         let decision = guard.check_output(&response, &ctx).await;
         assert!(decision.is_block());
     }
@@ -177,18 +177,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_scope_guard_disputes() {
-        let guard = LlmScopeGuard::for_agent("disputes");
+        let guard = LlmScopeGuard::for_agent("Banking Disputes Agent");
         let response = make_response("I'll help you transfer funds now.");
-        let ctx = GuardrailContext::new("disputes");
+        let ctx = GuardrailContext::new("Banking Disputes Agent");
         let decision = guard.check_output(&response, &ctx).await;
         assert!(decision.is_block());
     }
 
     #[tokio::test]
     async fn test_scope_guard_input_always_passes() {
-        let guard = LlmScopeGuard::for_agent("authenticated_crm");
+        let guard = LlmScopeGuard::for_agent("Banking CRM Agent (Authenticated)");
         let message = Message::user("transfer funds please");
-        let ctx = GuardrailContext::new("authenticated_crm");
+        let ctx = GuardrailContext::new("Banking CRM Agent (Authenticated)");
         let decision = guard.check_input(&message, &ctx).await;
         assert!(decision.is_pass());
     }

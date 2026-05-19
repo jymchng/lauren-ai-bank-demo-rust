@@ -13,7 +13,7 @@ use crate::tools::check_auth::CheckAuthenticationTool;
 
 /// The authenticated CRM agent — handles account inquiries for verified users.
 #[agent(
-    name = "authenticated_crm",
+    name = "Banking CRM Agent (Authenticated)",
     description = "You are Lauren, an authenticated banking assistant. You help verified users \
                    with account inquiries, balance checks, and transaction history. You can also \
                    hand off to specialized agents for transfers and disputes. \

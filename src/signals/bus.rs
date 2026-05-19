@@ -7,45 +7,82 @@ use tokio::sync::broadcast;
 #[serde(tag = "type")]
 pub enum AppSignal {
     /// Emitted when an LLM call completes.
+    #[serde(rename = "token_usage")]
     ModelCallComplete {
         model: String,
-        usage_tokens: usize,
+        input_tokens: usize,
+        output_tokens: usize,
         cost_usd: f64,
+        duration_ms: u64,
         conversation_id: String,
     },
-    /// Emitted when an agent turn completes.
+    /// Emitted when an agent turn completes (internal, not forwarded to frontend).
     AgentTurnComplete {
         agent_name: String,
         turn: usize,
         conversation_id: String,
     },
     /// Emitted when a tool call starts.
+    #[serde(rename = "tool_started")]
     ToolCallStarted {
         tool_name: String,
+        tool_use_id: String,
         conversation_id: String,
     },
     /// Emitted when a tool call completes.
+    #[serde(rename = "tool_complete")]
     ToolCallComplete {
         tool_name: String,
+        tool_use_id: String,
         duration_ms: u64,
+        success: bool,
+        error: Option<String>,
         conversation_id: String,
     },
     /// Emitted when a guardrail is triggered.
+    #[serde(rename = "guardrail_triggered")]
     GuardrailTriggered {
+        guardrail_name: String,
         agent_name: String,
+        violation: String,
         passed: bool,
         conversation_id: String,
     },
-    /// Emitted when a tool requires human approval.
+    /// Emitted when a tool requires human approval (Python-compatible shape).
+    #[serde(rename = "transfer_approval_request")]
     ToolPendingApproval {
+        approval_id: String,
+        from_user: String,
+        to_user: String,
+        amount_usd: f64,
+        description: String,
         conversation_id: String,
-        action_type: String,
-        details: serde_json::Value,
+        created_at_ms: u64,
     },
     /// Emitted when an agent run completes.
+    #[serde(rename = "run_complete")]
     AgentRunComplete {
         agent_name: String,
+        turns: usize,
+        total_cost_usd: f64,
         conversation_id: String,
+    },
+    /// Emitted when an agent hands off to another agent.
+    #[serde(rename = "agent_handoff")]
+    AgentHandoff {
+        from_agent: String,
+        to_agent: String,
+        summary: String,
+        conversation_id: String,
+    },
+    /// Broadcast to all clients after a successful transfer.
+    #[serde(rename = "balance_changed")]
+    BalanceChanged {
+        from_user: String,
+        to_user: String,
+        amount: f64,
+        from_balance: f64,
+        to_balance: f64,
     },
 }
 
@@ -97,6 +134,8 @@ mod tests {
 
         bus.emit(AppSignal::AgentRunComplete {
             agent_name: "TestAgent".into(),
+            turns: 1,
+            total_cost_usd: 0.0,
             conversation_id: "conv1".into(),
         });
 
@@ -130,7 +169,9 @@ mod tests {
         let bus = AppSignalBus::new();
         // Emitting with no receivers should not panic
         bus.emit(AppSignal::GuardrailTriggered {
+            guardrail_name: "LlmScopeGuard".into(),
             agent_name: "Agent1".into(),
+            violation: "".into(),
             passed: true,
             conversation_id: "conv1".into(),
         });
@@ -156,12 +197,14 @@ mod tests {
     fn test_signal_serialization() {
         let signal = AppSignal::ModelCallComplete {
             model: "gpt-4".into(),
-            usage_tokens: 100,
+            input_tokens: 80,
+            output_tokens: 20,
             cost_usd: 0.01,
+            duration_ms: 500,
             conversation_id: "conv1".into(),
         };
         let json = serde_json::to_string(&signal).unwrap();
-        assert!(json.contains("ModelCallComplete"));
+        assert!(json.contains("token_usage"));
     }
 
     #[test]
@@ -169,8 +212,10 @@ mod tests {
         let signals = vec![
             AppSignal::ModelCallComplete {
                 model: "gpt-4".into(),
-                usage_tokens: 100,
+                input_tokens: 80,
+                output_tokens: 20,
                 cost_usd: 0.01,
+                duration_ms: 500,
                 conversation_id: "conv1".into(),
             },
             AppSignal::AgentTurnComplete {
@@ -180,25 +225,50 @@ mod tests {
             },
             AppSignal::ToolCallStarted {
                 tool_name: "get_balance".into(),
+                tool_use_id: "tu-1".into(),
                 conversation_id: "conv1".into(),
             },
             AppSignal::ToolCallComplete {
                 tool_name: "get_balance".into(),
+                tool_use_id: "tu-1".into(),
                 duration_ms: 50,
+                success: true,
+                error: None,
                 conversation_id: "conv1".into(),
             },
             AppSignal::GuardrailTriggered {
+                guardrail_name: "LlmScopeGuard".into(),
                 agent_name: "Agent1".into(),
+                violation: "".into(),
                 passed: true,
                 conversation_id: "conv1".into(),
             },
             AppSignal::ToolPendingApproval {
+                approval_id: "conv1".into(),
+                from_user: "alice".into(),
+                to_user: "bob".into(),
+                amount_usd: 100.0,
+                description: "Transfer to bob".into(),
                 conversation_id: "conv1".into(),
-                action_type: "transfer".into(),
-                details: serde_json::json!({"amount": 100}),
+                created_at_ms: 0,
+            },
+            AppSignal::BalanceChanged {
+                from_user: "alice".into(),
+                to_user: "bob".into(),
+                amount: 100.0,
+                from_balance: 4900.0,
+                to_balance: 3300.0,
             },
             AppSignal::AgentRunComplete {
                 agent_name: "Agent1".into(),
+                turns: 2,
+                total_cost_usd: 0.0,
+                conversation_id: "conv1".into(),
+            },
+            AppSignal::AgentHandoff {
+                from_agent: "Banking CRM Agent (Authenticated)".into(),
+                to_agent: "Banking Transfer Agent".into(),
+                summary: "User wants to transfer $100".into(),
                 conversation_id: "conv1".into(),
             },
         ];

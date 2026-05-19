@@ -10,7 +10,32 @@ pub struct BankAccount {
     pub avatar_color: String,
 }
 
-/// A transaction record between two users.
+/// A bank account with embedded transactions — returned by GET /api/banking/accounts/{user_id}.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BankAccountDetail {
+    pub user_id: String,
+    pub name: String,
+    pub account_id: String,
+    pub balance: f64,
+    pub avatar_color: String,
+    pub transactions: Vec<TransactionView>,
+}
+
+/// A transaction from the perspective of a specific user (Python-compatible shape).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionView {
+    pub tx_id: String,
+    /// "debit" if the user sent funds, "credit" if received.
+    #[serde(rename = "type")]
+    pub tx_type: String,
+    pub counterparty_id: String,
+    pub counterparty_name: String,
+    pub amount: f64,
+    pub description: String,
+    pub timestamp: String,
+}
+
+/// A transaction record between two users (internal storage).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Transaction {
     pub tx_id: String,
@@ -21,6 +46,34 @@ pub struct Transaction {
     pub description: String,
     pub from_name: String,
     pub to_name: String,
+}
+
+impl Transaction {
+    /// Convert to a user-perspective view (debit/credit, counterparty).
+    pub fn to_view(&self, user_id: &str) -> TransactionView {
+        let is_debit = self.from_user == user_id;
+        TransactionView {
+            tx_id: self.tx_id.clone(),
+            tx_type: if is_debit {
+                "debit".into()
+            } else {
+                "credit".into()
+            },
+            counterparty_id: if is_debit {
+                self.to_user.clone()
+            } else {
+                self.from_user.clone()
+            },
+            counterparty_name: if is_debit {
+                self.to_name.clone()
+            } else {
+                self.from_name.clone()
+            },
+            amount: self.amount,
+            description: self.description.clone(),
+            timestamp: self.timestamp.clone(),
+        }
+    }
 }
 
 #[cfg(test)]

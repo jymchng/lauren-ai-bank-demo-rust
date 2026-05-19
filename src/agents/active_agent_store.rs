@@ -38,9 +38,9 @@ impl ActiveAgentStore {
     /// Get the default agent name based on authentication status.
     pub fn get_default_agent(is_authenticated: bool) -> &'static str {
         if is_authenticated {
-            "AuthenticatedCRM"
+            "Banking CRM Agent (Authenticated)"
         } else {
-            "UnauthenticatedCRM"
+            "Banking CRM Agent (Public)"
         }
     }
 
@@ -84,10 +84,12 @@ mod tests {
     #[tokio::test]
     async fn test_set_and_get_active_agent() {
         let store = ActiveAgentStore::new();
-        store.set_active_agent("conv1", "AuthenticatedCRM").await;
+        store
+            .set_active_agent("conv1", "Banking CRM Agent (Authenticated)")
+            .await;
         assert_eq!(
             store.get_active_agent("conv1").await,
-            Some("AuthenticatedCRM".to_string())
+            Some("Banking CRM Agent (Authenticated)".to_string())
         );
     }
 
@@ -100,7 +102,9 @@ mod tests {
     #[tokio::test]
     async fn test_clear_agent() {
         let store = ActiveAgentStore::new();
-        store.set_active_agent("conv1", "AuthenticatedCRM").await;
+        store
+            .set_active_agent("conv1", "Banking CRM Agent (Authenticated)")
+            .await;
         store.clear_agent("conv1").await;
         assert_eq!(store.get_active_agent("conv1").await, None);
     }
@@ -121,26 +125,40 @@ mod tests {
     async fn test_get_default_agent() {
         assert_eq!(
             ActiveAgentStore::get_default_agent(true),
-            "AuthenticatedCRM"
+            "Banking CRM Agent (Authenticated)"
         );
         assert_eq!(
             ActiveAgentStore::get_default_agent(false),
-            "UnauthenticatedCRM"
+            "Banking CRM Agent (Public)"
         );
     }
 
     #[tokio::test]
     async fn test_check_handoff() {
         let store = ActiveAgentStore::new();
-        store.set_active_agent("conv1", "AuthenticatedCRM").await;
-        assert!(!store.check_handoff("conv1", "AuthenticatedCRM").await);
-        assert!(store.check_handoff("conv1", "UnauthenticatedCRM").await);
+        store
+            .set_active_agent("conv1", "Banking CRM Agent (Authenticated)")
+            .await;
+        assert!(
+            !store
+                .check_handoff("conv1", "Banking CRM Agent (Authenticated)")
+                .await
+        );
+        assert!(
+            store
+                .check_handoff("conv1", "Banking CRM Agent (Public)")
+                .await
+        );
     }
 
     #[tokio::test]
     async fn test_check_handoff_no_agent() {
         let store = ActiveAgentStore::new();
-        assert!(!store.check_handoff("conv1", "UnauthenticatedCRM").await);
+        assert!(
+            !store
+                .check_handoff("conv1", "Banking CRM Agent (Public)")
+                .await
+        );
     }
 
     #[tokio::test]
@@ -152,26 +170,34 @@ mod tests {
     #[tokio::test]
     async fn test_overwrite_active_agent() {
         let store = ActiveAgentStore::new();
-        store.set_active_agent("conv1", "AuthenticatedCRM").await;
-        store.set_active_agent("conv1", "BankTransfer").await;
+        store
+            .set_active_agent("conv1", "Banking CRM Agent (Authenticated)")
+            .await;
+        store
+            .set_active_agent("conv1", "Banking Transfer Agent")
+            .await;
         assert_eq!(
             store.get_active_agent("conv1").await,
-            Some("BankTransfer".to_string())
+            Some("Banking Transfer Agent".to_string())
         );
     }
 
     #[tokio::test]
     async fn test_multiple_conversations() {
         let store = ActiveAgentStore::new();
-        store.set_active_agent("conv1", "AuthenticatedCRM").await;
-        store.set_active_agent("conv2", "BankTransfer").await;
+        store
+            .set_active_agent("conv1", "Banking CRM Agent (Authenticated)")
+            .await;
+        store
+            .set_active_agent("conv2", "Banking Transfer Agent")
+            .await;
         assert_eq!(
             store.get_active_agent("conv1").await,
-            Some("AuthenticatedCRM".to_string())
+            Some("Banking CRM Agent (Authenticated)".to_string())
         );
         assert_eq!(
             store.get_active_agent("conv2").await,
-            Some("BankTransfer".to_string())
+            Some("Banking Transfer Agent".to_string())
         );
     }
 }

@@ -9,10 +9,15 @@ use crate::error::AppError;
 use crate::AppState;
 
 /// Request body for the approval endpoint.
+/// Accepts `approval_id` (Python-compatible) or `conversation_id` as the key.
 #[derive(Debug, Deserialize)]
 pub struct ApprovalRequest {
-    pub conversation_id: String,
+    /// Python frontend sends this as `approval_id` (== conversation_id in Rust).
+    #[serde(alias = "conversation_id")]
+    pub approval_id: String,
     pub approved: bool,
+    /// Ignored — user_id is verified by the approval service's stored record.
+    pub user_id: Option<String>,
 }
 
 /// Handle an approval response from the browser.
@@ -22,7 +27,7 @@ pub async fn respond(
 ) -> Result<Json<Value>, AppError> {
     match state
         .approval_service
-        .respond(&body.conversation_id, body.approved)
+        .respond(&body.approval_id, body.approved)
         .await
     {
         Ok(()) => Ok(Json(json!({"status": "ok"}))),
@@ -47,7 +52,7 @@ mod tests {
     async fn test_approval_endpoint_no_pending() {
         let app = create_test_app().await;
         let body = serde_json::json!({
-            "conversation_id": "nonexistent",
+            "approval_id": "nonexistent",
             "approved": true
         });
         let response = app
