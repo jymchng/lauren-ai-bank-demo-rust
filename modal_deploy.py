@@ -110,6 +110,6 @@ def server():
         env={
             **__import__("os").environ,
             "PORT": str(PORT),
-            "RUST_LOG": "lauren_chatbot=info",
+            "RUST_LOG": "lauren_chatbot=debug",
         },
     )
