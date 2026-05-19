@@ -107,5 +107,9 @@ def server():
 
     subprocess.Popen(
         ["/usr/local/bin/lauren-chatbot"],
-        env={**__import__("os").environ, "PORT": str(PORT)},
+        env={
+            **__import__("os").environ,
+            "PORT": str(PORT),
+            "RUST_LOG": "lauren_chatbot=info",
+        },
     )
