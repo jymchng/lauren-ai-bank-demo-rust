@@ -31,3 +31,5 @@ target/
 .codemap/
 lcov.info
 .env
+__pycache__/
+uv.lock
