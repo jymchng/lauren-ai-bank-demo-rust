@@ -19,10 +19,15 @@ Deploy
 The public HTTPS URL is printed after deploy.
 """
 
+import os
+import subprocess
+from pathlib import Path
+
+import modal
+
 # ── Paths (resolved on the deploying machine) ─────────────────────────────────
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-ROOT = HERE.parent
 AGTRS_DIR = os.path.normpath(os.path.join(HERE, "../agtrs"))
 INJECTABLE_DIR = os.path.normpath(os.path.join(HERE, "../injectable"))
 
@@ -33,12 +38,6 @@ INJECTABLE_DIR = os.path.normpath(os.path.join(HERE, "../injectable"))
 #
 #   /build/app/../agtrs       → /build/agtrs       ✓
 #   /build/app/../injectable  → /build/injectable   ✓
-
-import os
-import subprocess
-from pathlib import Path
-
-import modal
 
 
 def git_tracked_files(repo: Path):

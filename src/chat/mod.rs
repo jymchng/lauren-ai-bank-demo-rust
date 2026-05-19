@@ -17,6 +17,8 @@ use injectable::axum::InjectableState;
 use injectable::prelude::*;
 use serde_json::json;
 
+use tracing::{debug, error, info, warn};
+
 use crate::agents::active_agent_store::ActiveAgentStore;
 use crate::agents::auth_crm::AuthenticatedCrmAgent;
 use crate::agents::disputes::DisputesAgent;
@@ -72,6 +74,7 @@ pub async fn stream_chat(
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
     let Some(user_id) = req.user_id.clone() else {
+        warn!("Authenticated chat request rejected: missing user_id");
         return (
             axum::http::StatusCode::UNAUTHORIZED,
             axum::Json(json!({"error": "user_id required"})),
@@ -183,19 +186,33 @@ fn build_chat_stream(
     let conv_id_cleanup = conversation_id.clone();
 
     tokio::spawn(async move {
-        let max_handoffs: usize = if user_id.is_some() { 8 } else { 4 };
+        let authenticated = user_id.is_some();
+        let max_handoffs: usize = if authenticated { 8 } else { 4 };
+
+        info!(
+            conv_id = %conversation_id,
+            authenticated,
+            max_handoffs,
+            "Chat stream started"
+        );
 
         let mut current_agent_name = deps
             .active_agent_store
             .get_active_agent(&conversation_id)
             .await
             .unwrap_or_else(|| {
-                if user_id.is_some() {
+                if authenticated {
                     "Banking CRM Agent (Authenticated)".to_string()
                 } else {
                     "Banking CRM Agent (Public)".to_string()
                 }
             });
+
+        info!(
+            conv_id = %conversation_id,
+            agent = %current_agent_name,
+            "Initial agent resolved"
+        );
 
         // Per-request signal bus — bridges executor-native signals to the shared WS broadcast
         // with the current conversation_id injected so the frontend can route them.
@@ -260,11 +277,20 @@ fn build_chat_stream(
         let raw_message = message.clone();
         // current_prompt starts as the user's message and is rebuilt on each handoff.
         let mut current_prompt = message;
+        let mut handoff_count: usize = 0;
 
-        'handoff: for _ in 0..max_handoffs {
+        'handoff: for turn in 0..max_handoffs {
             let agent = match deps.agents.get(&current_agent_name) {
                 Some(a) => Arc::clone(a),
-                None => break,
+                None => {
+                    error!(
+                        conv_id = %conversation_id,
+                        agent = %current_agent_name,
+                        turn,
+                        "Agent not found in registry — aborting stream"
+                    );
+                    break;
+                }
             };
 
             let _ = tx.unbounded_send(Ok(Event::default()
@@ -273,11 +299,36 @@ fn build_chat_stream(
 
             // Each agent has its own isolated conversation history.
             let agent_conv_key = format!("{conversation_id}::{current_agent_name}");
-            let agent_history: Vec<Message> = deps
-                .conv_store
-                .load(&agent_conv_key)
-                .await
-                .unwrap_or_default();
+            let agent_history: Vec<Message> = match deps.conv_store.load(&agent_conv_key).await {
+                Ok(h) => {
+                    debug!(
+                        conv_id = %conversation_id,
+                        agent = %current_agent_name,
+                        history_len = h.len(),
+                        "Loaded agent history"
+                    );
+                    h
+                }
+                Err(e) => {
+                    warn!(
+                        conv_id = %conversation_id,
+                        agent = %current_agent_name,
+                        error = %e,
+                        "Failed to load agent history — starting fresh"
+                    );
+                    vec![]
+                }
+            };
+
+            info!(
+                conv_id = %conversation_id,
+                agent = %current_agent_name,
+                turn,
+                handoff_count,
+                history_len = agent_history.len(),
+                prompt_len = current_prompt.len(),
+                "Running agent"
+            );
 
             let mut ctx_state = HashMap::new();
             ctx_state.insert(
@@ -314,23 +365,57 @@ fn build_chat_stream(
             let mut completed_history: Vec<Message> = Vec::new();
             while let Some(event) = agent_stream.next().await {
                 if let StreamEvent::Done { messages, .. } = &event {
+                    debug!(
+                        conv_id = %conversation_id,
+                        agent = %current_agent_name,
+                        output_messages = messages.len(),
+                        "Agent stream done"
+                    );
                     completed_history = messages.clone();
                     done = true;
                 }
                 if let Some(sse_event) = stream_event_to_sse(&event) {
-                    let _ = tx.unbounded_send(Ok(sse_event));
+                    if tx.unbounded_send(Ok(sse_event)).is_err() {
+                        warn!(
+                            conv_id = %conversation_id,
+                            agent = %current_agent_name,
+                            "SSE receiver dropped — client disconnected"
+                        );
+                        break;
+                    }
                 }
             }
 
             if !done {
+                warn!(
+                    conv_id = %conversation_id,
+                    agent = %current_agent_name,
+                    turn,
+                    "Agent stream ended without Done event — aborting handoff loop"
+                );
                 break;
             }
 
             // Save this agent's conversation under its own isolated key.
-            let _ = deps
+            if let Err(e) = deps
                 .conv_store
                 .save(&agent_conv_key, &completed_history)
-                .await;
+                .await
+            {
+                warn!(
+                    conv_id = %conversation_id,
+                    agent = %current_agent_name,
+                    error = %e,
+                    "Failed to save agent history"
+                );
+            } else {
+                debug!(
+                    conv_id = %conversation_id,
+                    agent = %current_agent_name,
+                    messages_saved = completed_history.len(),
+                    "Agent history saved"
+                );
+            }
 
             let new_agent = deps
                 .active_agent_store
@@ -343,6 +428,24 @@ fn build_chat_stream(
                         .get_and_clear_summary(&conversation_id)
                         .await
                         .unwrap_or_default();
+
+                    handoff_count += 1;
+                    info!(
+                        conv_id = %conversation_id,
+                        from_agent = %current_agent_name,
+                        to_agent = %name,
+                        handoff_count,
+                        has_summary = !handoff_summary.is_empty(),
+                        "Agent handoff"
+                    );
+
+                    if handoff_count >= max_handoffs {
+                        warn!(
+                            conv_id = %conversation_id,
+                            max_handoffs,
+                            "Max handoffs reached — breaking loop"
+                        );
+                    }
 
                     deps.signal_bus.emit(AppSignal::AgentHandoff {
                         from_agent: current_agent_name.clone(),
@@ -366,14 +469,33 @@ fn build_chat_stream(
                             handoff_summary
                         }
                     } else {
+                        warn!(
+                            conv_id = %conversation_id,
+                            from_agent = %current_agent_name,
+                            to_agent = %name,
+                            "Handoff has no summary — reusing original message"
+                        );
                         raw_message.clone()
                     };
 
                     current_agent_name = name;
                 }
-                _ => break 'handoff,
+                _ => {
+                    debug!(
+                        conv_id = %conversation_id,
+                        agent = %current_agent_name,
+                        "No handoff — agent loop complete"
+                    );
+                    break 'handoff;
+                }
             }
         }
+
+        info!(
+            conv_id = %conversation_id,
+            total_handoffs = handoff_count,
+            "Chat stream complete"
+        );
 
         let _ = tx.unbounded_send(Ok(Event::default().event("done").data("")));
 
