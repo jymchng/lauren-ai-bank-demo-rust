@@ -115,6 +115,11 @@ impl AppSignalBus {
     pub fn receiver_count(&self) -> usize {
         self.sender.receiver_count()
     }
+
+    /// Clone the sender — lets callers register bridge closures that push into this bus.
+    pub fn sender(&self) -> broadcast::Sender<AppSignal> {
+        self.sender.clone()
+    }
 }
 
 impl Default for AppSignalBus {

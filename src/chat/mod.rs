@@ -4,9 +4,9 @@ pub mod sse;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Instant;
 
 use agtrs::prelude::*;
+use agtrs_runtime::signals as agtrs_sig;
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
@@ -85,12 +85,72 @@ fn build_chat_stream(
                 }
             });
 
-        // Accumulated history — updated after each agent turn so handed-off agents
-        // receive the full conversation context, not just the pre-request history.
-        let mut accumulated_history: Vec<Message> = {
-            let store = state.conversation_history.read().await;
-            store.get(&conversation_id).cloned().unwrap_or_default()
-        };
+        // Per-request signal bus — bridges executor-native signals to the shared WS broadcast
+        // with the current conversation_id injected so the frontend can route them.
+        let per_request_signals = Arc::new(agtrs_runtime::signals::SignalBus::new());
+        {
+            let conv_id = conversation_id.clone();
+            let ws_tx = state.signal_bus.sender();
+            per_request_signals
+                .on::<agtrs_sig::ToolCallStarted>(move |e| {
+                    let _ = ws_tx.send(AppSignal::ToolCallStarted {
+                        tool_name: e.tool_name.clone(),
+                        tool_use_id: e.tool_use_id.clone(),
+                        conversation_id: conv_id.clone(),
+                    });
+                })
+                .await;
+
+            let conv_id = conversation_id.clone();
+            let ws_tx = state.signal_bus.sender();
+            per_request_signals
+                .on::<agtrs_sig::ToolCallComplete>(move |e| {
+                    let _ = ws_tx.send(AppSignal::ToolCallComplete {
+                        tool_name: e.tool_name.clone(),
+                        tool_use_id: e.tool_use_id.clone(),
+                        duration_ms: e.duration_ms as u64,
+                        success: e.success,
+                        error: e.error.clone(),
+                        conversation_id: conv_id.clone(),
+                    });
+                })
+                .await;
+
+            let conv_id = conversation_id.clone();
+            let ws_tx = state.signal_bus.sender();
+            per_request_signals
+                .on::<agtrs_sig::ModelCallComplete>(move |e| {
+                    let _ = ws_tx.send(AppSignal::ModelCallComplete {
+                        model: e.model.clone(),
+                        input_tokens: e.usage.input_tokens,
+                        output_tokens: e.usage.output_tokens,
+                        cost_usd: e.cost_usd,
+                        duration_ms: e.duration_ms as u64,
+                        conversation_id: conv_id.clone(),
+                    });
+                })
+                .await;
+
+            let conv_id = conversation_id.clone();
+            let ws_tx = state.signal_bus.sender();
+            per_request_signals
+                .on::<agtrs_sig::AgentRunComplete>(move |e| {
+                    let _ = ws_tx.send(AppSignal::AgentRunComplete {
+                        agent_name: e.agent_name.clone(),
+                        turns: e.turns,
+                        total_cost_usd: e.total_cost_usd,
+                        conversation_id: conv_id.clone(),
+                    });
+                })
+                .await;
+        }
+
+        // Load conversation history from the shared store.
+        let mut accumulated_history: Vec<Message> = state
+            .conv_store
+            .load(&conversation_id)
+            .await
+            .unwrap_or_default();
 
         let current_message = message;
         let mut is_first_turn = true;
@@ -109,10 +169,7 @@ fn build_chat_stream(
                 .event("agent_started")
                 .data(current_agent_name.clone())));
 
-            // Build input text.
-            // First turn: use original user message (summary is None for the very first turn).
-            // Subsequent turns: only pass the handoff summary — the full history is already
-            // seeded into the context so repeating the original message would duplicate it.
+            // First turn: original user message; subsequent turns: handoff summary.
             let input_text = if is_first_turn {
                 is_first_turn = false;
                 current_message.clone()
@@ -122,14 +179,6 @@ fn build_chat_stream(
                     None => current_message.clone(),
                 }
             };
-
-            // Build AgentContext with user/conversation state
-            let mut ctx = AgentContext::new(
-                &current_agent_name,
-                agent.config().clone(),
-                Arc::clone(&state.llm),
-                Arc::clone(&state.resolve_ctx),
-            );
 
             let mut ctx_state = HashMap::new();
             ctx_state.insert(
@@ -142,76 +191,29 @@ fn build_chat_stream(
                     serde_json::Value::String(uid.clone()),
                 );
             }
-            ctx.set_context_state(ctx_state);
 
-            // Seed context with accumulated history (includes prior agents' full turns).
-            for msg in &accumulated_history {
-                ctx.add_message(msg.clone());
-            }
+            // Build AgentContext via builder — injects shared signal bus and conv store.
+            let ctx = AgentContext::builder(
+                &current_agent_name,
+                agent.config().clone(),
+                Arc::clone(&state.llm),
+                Arc::clone(&state.resolve_ctx),
+            )
+            .with_signals(Arc::clone(&per_request_signals))
+            .with_conversation_store(Arc::clone(&state.conv_store) as Arc<dyn ConversationStore>)
+            .with_history(accumulated_history.iter().cloned())
+            .with_state(ctx_state)
+            .build();
 
-            // Stream this agent's turn (executor auto-registers agent.tools())
+            // Stream this agent's turn (executor auto-registers agent.tools()).
             let mut agent_stream =
                 AgentExecutor::run_stream(Arc::clone(&agent), Message::user(input_text), ctx);
 
-            // Track tool start times for duration calculation.
-            let mut tool_start: HashMap<String, (String, Instant)> = HashMap::new();
-
             let mut done = false;
             while let Some(event) = agent_stream.next().await {
-                match &event {
-                    StreamEvent::ToolExecution {
-                        tool_name,
-                        tool_use_id,
-                    } => {
-                        tool_start.insert(tool_use_id.clone(), (tool_name.clone(), Instant::now()));
-                        state.signal_bus.emit(AppSignal::ToolCallStarted {
-                            tool_name: tool_name.clone(),
-                            tool_use_id: tool_use_id.clone(),
-                            conversation_id: conversation_id.clone(),
-                        });
-                    }
-                    StreamEvent::ToolResult { result } => {
-                        if let Some((tool_name, start)) = tool_start.remove(&result.tool_use_id) {
-                            let is_error = result.is_error;
-                            state.signal_bus.emit(AppSignal::ToolCallComplete {
-                                tool_name,
-                                tool_use_id: result.tool_use_id.clone(),
-                                duration_ms: start.elapsed().as_millis() as u64,
-                                success: !is_error,
-                                error: if is_error {
-                                    Some(result.content.clone())
-                                } else {
-                                    None
-                                },
-                                conversation_id: conversation_id.clone(),
-                            });
-                        }
-                    }
-                    StreamEvent::Done {
-                        agent_name,
-                        usage,
-                        messages,
-                        turns,
-                        ..
-                    } => {
-                        accumulated_history = messages.clone();
-                        done = true;
-                        state.signal_bus.emit(AppSignal::AgentRunComplete {
-                            agent_name: agent_name.clone(),
-                            turns: *turns,
-                            total_cost_usd: 0.0,
-                            conversation_id: conversation_id.clone(),
-                        });
-                        state.signal_bus.emit(AppSignal::ModelCallComplete {
-                            model: state.config.llm_model.clone(),
-                            input_tokens: usage.input_tokens,
-                            output_tokens: usage.output_tokens,
-                            cost_usd: 0.0,
-                            duration_ms: 0,
-                            conversation_id: conversation_id.clone(),
-                        });
-                    }
-                    _ => {}
+                if let StreamEvent::Done { messages, .. } = &event {
+                    accumulated_history = messages.clone();
+                    done = true;
                 }
                 if let Some(sse_event) = stream_event_to_sse(&event) {
                     let _ = tx.unbounded_send(Ok(sse_event));
@@ -222,14 +224,13 @@ fn build_chat_stream(
                 break;
             }
 
-            // Check for agent handoff
+            // Check for agent handoff.
             let new_agent = state
                 .active_agent_store
                 .get_active_agent(&conversation_id)
                 .await;
             match new_agent {
                 Some(name) if name != current_agent_name => {
-                    // Consume the summary NOW so it can be carried forward as the next agent's input context.
                     let handoff_summary = state
                         .active_agent_store
                         .get_and_clear_summary(&conversation_id)
@@ -254,16 +255,16 @@ fn build_chat_stream(
             }
         }
 
-        // Persist conversation history so the next request has full context.
-        {
-            let mut store = state.conversation_history.write().await;
-            store.insert(conversation_id.clone(), accumulated_history);
-        }
+        // Persist conversation history.
+        let _ = state
+            .conv_store
+            .save(&conversation_id, &accumulated_history)
+            .await;
 
         // Emit final done — once for the entire multi-agent run (not per-agent turn).
         let _ = tx.unbounded_send(Ok(Event::default().event("done").data("")));
 
-        // Cleanup: cancel any pending approvals when the stream ends / client disconnects
+        // Cleanup: cancel any pending approvals when the stream ends / client disconnects.
         approval_svc.cancel_approval(&conv_id_cleanup).await;
     });
 

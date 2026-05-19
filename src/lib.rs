@@ -15,12 +15,11 @@ pub mod signals;
 pub mod tools;
 pub mod ws;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use agtrs::prelude::*;
+use agtrs_runtime::memory::InMemoryConversationStore;
 use injectable::prelude::*;
-use tokio::sync::RwLock;
 
 use agents::active_agent_store::ActiveAgentStore;
 use agents::auth_crm::AuthenticatedCrmAgent;
@@ -61,8 +60,8 @@ pub struct AppState {
     pub resolve_ctx: Arc<injectable_runtime::ResolveContext>,
     /// The LLM provider — passed to AgentContext for streaming calls.
     pub llm: Arc<dyn LlmProvider>,
-    /// Shared conversation history store: conversation_id -> Vec<Message>.
-    pub conversation_history: Arc<RwLock<HashMap<String, Vec<Message>>>>,
+    /// Shared conversation store — persists history across HTTP requests.
+    pub conv_store: Arc<InMemoryConversationStore>,
 }
 
 impl AppState {
@@ -119,7 +118,7 @@ pub async fn build_app_state() -> Arc<AppState> {
         disputes_agent: get!(DisputesAgent),
         resolve_ctx,
         llm,
-        conversation_history: Arc::new(RwLock::new(HashMap::new())),
+        conv_store: Arc::new(InMemoryConversationStore::new()),
     })
 }
 
