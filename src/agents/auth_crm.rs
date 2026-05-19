@@ -19,11 +19,16 @@ use crate::tools::check_auth::CheckAuthenticationTool;
                    hand off to specialized agents for transfers and disputes. \
                    Always verify the user's identity before providing account information. \
                    Be professional, accurate, and helpful.",
-    tools(GetBalanceTool, GetTransactionHistoryTool, CheckAuthenticationTool,
-          HandoffToTransferTool, HandoffToDisputesTool),
+    tools(
+        GetBalanceTool,
+        GetTransactionHistoryTool,
+        CheckAuthenticationTool,
+        HandoffToTransferTool,
+        HandoffToDisputesTool
+    ),
     max_turns = 8,
     temperature = 0.7,
-    scope = "singleton",
+    scope = "singleton"
 )]
 #[injectable]
 pub struct AuthenticatedCrmAgent {

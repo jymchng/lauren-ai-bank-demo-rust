@@ -1,5 +1,4 @@
-use agtrs::agtrs_runtime;
-//! SSE event mapping from StreamEvent to axum Event.
+//! SSE event mapping from agtrs StreamEvent to axum SSE Event.
 
 use axum::response::sse::Event;
 
@@ -12,7 +11,7 @@ impl From<SseEvent> for Event {
     }
 }
 
-/// Convert an agtrs StreamEvent to an SSE event string.
+/// Convert an agtrs StreamEvent to an SseEvent for client delivery.
 pub fn stream_event_to_sse(event: &agtrs_runtime::streaming::StreamEvent) -> Option<SseEvent> {
     match event {
         agtrs_runtime::streaming::StreamEvent::TextDelta { delta } => Some(SseEvent::TextDelta {
@@ -23,23 +22,33 @@ pub fn stream_event_to_sse(event: &agtrs_runtime::streaming::StreamEvent) -> Opt
                 tool_name: tool_name.clone(),
             })
         }
-        agtrs_runtime::streaming::StreamEvent::PendingApproval {
-            tool_name, ..
-        } => Some(SseEvent::PendingApproval {
-            action: format!("Approval needed for: {}", tool_name),
-        }),
-        agtrs_runtime::streaming::StreamEvent::Done {
-            content,
-            turns,
-            ..
-        } => Some(SseEvent::Done {
-            content: content.clone(),
-            conversation_id: String::new(),
-            turns: *turns,
-        }),
+        agtrs_runtime::streaming::StreamEvent::ToolResult { result } => {
+            Some(SseEvent::ToolResult {
+                tool_use_id: result.tool_use_id.clone(),
+                content: result.content.clone(),
+                is_error: result.is_error,
+            })
+        }
+        agtrs_runtime::streaming::StreamEvent::PendingApproval { tool_name, .. } => {
+            Some(SseEvent::PendingApproval {
+                action: format!("Approval needed for: {tool_name}"),
+            })
+        }
+        agtrs_runtime::streaming::StreamEvent::Done { content, turns, .. } => {
+            Some(SseEvent::Done {
+                content: content.clone(),
+                conversation_id: String::new(),
+                turns: *turns,
+            })
+        }
         agtrs_runtime::streaming::StreamEvent::Error { message } => Some(SseEvent::Error {
             message: message.clone(),
         }),
+        agtrs_runtime::streaming::StreamEvent::GuardrailOverride { content } => {
+            Some(SseEvent::GuardrailOverride {
+                message: content.clone(),
+            })
+        }
         _ => None,
     }
 }
@@ -54,8 +63,7 @@ mod tests {
             delta: "Hello".into(),
         };
         let axum_event: Event = event.into();
-        // Just verify it converts without panic
-        let _ = format!("{:?}", axum_event);
+        let _ = format!("{axum_event:?}");
     }
 
     #[test]
@@ -72,12 +80,34 @@ mod tests {
     }
 
     #[test]
+    fn test_stream_event_tool_result() {
+        let result = agtrs_runtime::tool::ToolResult {
+            tool_use_id: "tu-1".into(),
+            content: "Balance: $5000".into(),
+            is_error: false,
+        };
+        let stream_event = agtrs_runtime::streaming::StreamEvent::ToolResult { result };
+        let sse = stream_event_to_sse(&stream_event);
+        assert!(sse.is_some());
+        match sse.unwrap() {
+            SseEvent::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(content, "Balance: $5000");
+                assert!(!is_error);
+            }
+            _ => panic!("Wrong type"),
+        }
+    }
+
+    #[test]
     fn test_stream_event_done() {
         let stream_event = agtrs_runtime::streaming::StreamEvent::Done {
             content: "Done!".into(),
             stop_reason: agtrs_runtime::transport::StopReason::EndTurn,
             usage: agtrs_runtime::transport::TokenUsage::new(10, 20),
             turns: 3,
+            agent_name: "test_agent".into(),
         };
         let sse = stream_event_to_sse(&stream_event);
         assert!(sse.is_some());

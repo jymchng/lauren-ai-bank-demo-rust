@@ -52,11 +52,27 @@ pub enum SseEvent {
         /// Handoff summary.
         summary: String,
     },
+    /// A tool finished executing.
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        /// The tool use ID.
+        tool_use_id: String,
+        /// The result content.
+        content: String,
+        /// Whether this is an error result.
+        is_error: bool,
+    },
     /// The agent needs approval for an action.
     #[serde(rename = "pending_approval")]
     PendingApproval {
         /// Description of the action.
         action: String,
+    },
+    /// A guardrail modified the response.
+    #[serde(rename = "guardrail_override")]
+    GuardrailOverride {
+        /// Modified message content.
+        message: String,
     },
     /// The response is complete.
     #[serde(rename = "done")]
@@ -82,7 +98,8 @@ mod tests {
 
     #[test]
     fn test_chat_request_deserialization() {
-        let json = r#"{"message":"What's my balance?","conversation_id":"conv-1","user_id":"user-123"}"#;
+        let json =
+            r#"{"message":"What's my balance?","conversation_id":"conv-1","user_id":"user-123"}"#;
         let req: ChatRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.message, "What's my balance?");
         assert_eq!(req.conversation_id, Some("conv-1".into()));

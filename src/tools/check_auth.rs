@@ -1,6 +1,6 @@
 use agtrs::prelude::*;
 use injectable::prelude::*;
-    use injectable_runtime::{EmptySingletonStore, ResolveContext};
+use injectable_runtime::{EmptySingletonStore, ResolveContext};
 use serde_json::{json, Value};
 
 /// Tool to check if the current user is authenticated.
@@ -10,6 +10,9 @@ pub struct CheckAuthenticationTool;
 
 #[async_trait::async_trait]
 impl Tool for CheckAuthenticationTool {
+    type Inputs = serde_json::Value;
+    type Output = ToolResult;
+
     fn name(&self) -> &str {
         "check_authentication"
     }

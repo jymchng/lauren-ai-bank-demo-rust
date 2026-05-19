@@ -9,6 +9,7 @@ use injectable::prelude::*;
 
 use crate::agents::handoff::HandoffToAuthenticatedCrmTool;
 use crate::tools::check_auth::CheckAuthenticationTool;
+use crate::tools::knowledge_tool::SearchPublicInfoTool;
 
 /// The unauthenticated CRM agent — handles public inquiries and authentication.
 #[agent(
@@ -19,10 +20,14 @@ use crate::tools::check_auth::CheckAuthenticationTool;
                    hand off to the authenticated CRM agent once they are verified. \
                    Always be helpful, professional, and security-conscious. \
                    Never provide account-specific information to unauthenticated users.",
-    tools(CheckAuthenticationTool, HandoffToAuthenticatedCrmTool),
+    tools(
+        CheckAuthenticationTool,
+        HandoffToAuthenticatedCrmTool,
+        SearchPublicInfoTool
+    ),
     max_turns = 4,
     temperature = 0.7,
-    scope = "singleton",
+    scope = "singleton"
 )]
 #[injectable]
 pub struct UnauthenticatedCrmAgent {

@@ -2,42 +2,50 @@ use std::sync::Arc;
 
 use agtrs::prelude::*;
 use injectable::prelude::*;
-use serde_json::{json, Value};
 
 use crate::banking::db::BankDatabase;
 
 // ── GetBalanceTool ────────────────────────────────────────────────────────────
 
 /// Tool to get the account balance for the authenticated user.
-/// Zero-dep unit struct — resolves BankDatabase from the DI container at call time.
 #[injectable]
-pub struct GetBalanceTool;
+pub struct GetBalanceTool {
+    #[injectable(inject)]
+    db: Arc<BankDatabase>,
+}
 
-#[async_trait::async_trait]
-impl Tool for GetBalanceTool {
-    fn name(&self) -> &str { "get_balance" }
-
-    fn description(&self) -> &str {
-        "Get the account balance for the authenticated user"
-    }
-
-    fn schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "required": [] })
-    }
-
-    async fn call(&self, _input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
-        let auth_uid = ctx.state.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+#[tool(name = "get_balance")]
+impl GetBalanceTool {
+    /// Get the account balance for the authenticated user.
+    #[agtrs(tool_run)]
+    pub async fn run(
+        &self,
+        #[agtrs(tool_param(description = "The user ID the customer identified themselves as"))]
+        user_id: String,
+        ctx: &ToolContext,
+    ) -> Result<ToolResult, AgtrsError> {
+        let auth_uid = ctx
+            .state
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if auth_uid.is_empty() {
-            return Ok(ToolResult::error("User not authenticated", &ctx.tool_use_id));
+            return Ok(ToolResult::error(
+                "User not authenticated",
+                &ctx.tool_use_id,
+            ));
         }
-
-        let db: Arc<BankDatabase> = ctx.resolve_context()
-            .resolve_external::<Arc<BankDatabase>>()
-            .await
-            .map_err(|e| AgtrsError::ToolCallFailed { tool_name: "dependency".into(), reason: format!("BankDatabase unavailable: {e}") })?;
-
-        match db.get_balance(auth_uid).await {
-            Some(balance) => Ok(ToolResult::ok(format!("Balance: ${:.2}", balance), &ctx.tool_use_id)),
+        if user_id != auth_uid {
+            return Ok(ToolResult::error(
+                format!("Access denied: authenticated as '{auth_uid}', not '{user_id}'"),
+                &ctx.tool_use_id,
+            ));
+        }
+        match self.db.get_balance(auth_uid).await {
+            Some(balance) => Ok(ToolResult::ok(
+                format!("Balance: ${:.2}", balance),
+                &ctx.tool_use_id,
+            )),
             None => Ok(ToolResult::error("Account not found", &ctx.tool_use_id)),
         }
     }
@@ -46,51 +54,66 @@ impl Tool for GetBalanceTool {
 // ── TransferFundsTool ─────────────────────────────────────────────────────────
 
 /// Tool to transfer funds between accounts (requires one-shot approval).
-/// Zero-dep unit struct — resolves BankDatabase from the DI container at call time.
 #[injectable]
-pub struct TransferFundsTool;
+pub struct TransferFundsTool {
+    #[injectable(inject)]
+    db: Arc<BankDatabase>,
+}
 
-#[async_trait::async_trait]
-impl Tool for TransferFundsTool {
-    fn name(&self) -> &str { "transfer_funds" }
-
-    fn description(&self) -> &str {
-        "Transfer funds from the authenticated user's account to another user"
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "to_user": { "type": "string", "description": "The recipient user ID" },
-                "amount":  { "type": "number", "description": "The amount to transfer" }
-            },
-            "required": ["to_user", "amount"]
-        })
-    }
-
-    async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
-        let auth_uid = ctx.state.get("user_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+#[tool(name = "transfer_funds", requires_confirmation = true)]
+impl TransferFundsTool {
+    /// Transfer funds from the authenticated user's account to another user.
+    #[agtrs(tool_run)]
+    pub async fn run(
+        &self,
+        #[agtrs(tool_param(description = "The user ID the customer identified themselves as"))]
+        user_id: String,
+        #[agtrs(tool_param(description = "The recipient user ID"))] to_user: String,
+        #[agtrs(tool_param(description = "The amount to transfer in USD"))] amount: f64,
+        ctx: &ToolContext,
+    ) -> Result<ToolResult, AgtrsError> {
+        let auth_uid = ctx
+            .state
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if auth_uid.is_empty() {
-            return Ok(ToolResult::error("User not authenticated", &ctx.tool_use_id));
+            return Ok(ToolResult::error(
+                "User not authenticated",
+                &ctx.tool_use_id,
+            ));
         }
-
-        let to_user = input.get("to_user").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let amount  = input.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        if user_id != auth_uid {
+            return Ok(ToolResult::error(
+                format!("Access denied: authenticated as '{auth_uid}', not '{user_id}'"),
+                &ctx.tool_use_id,
+            ));
+        }
 
         if to_user.is_empty() {
-            return Ok(ToolResult::error("Recipient user ID is required", &ctx.tool_use_id));
+            return Ok(ToolResult::error(
+                "Recipient user ID is required",
+                &ctx.tool_use_id,
+            ));
         }
         if amount <= 0.0 {
-            return Ok(ToolResult::error("Transfer amount must be positive", &ctx.tool_use_id));
+            return Ok(ToolResult::error(
+                "Transfer amount must be positive",
+                &ctx.tool_use_id,
+            ));
         }
 
-        let approved = ctx.state.get("transfer_approved")
+        let approved = ctx
+            .state
+            .get("transfer_approved")
             .and_then(|v| v.as_object())
             .map(|obj| {
-                let ok_to     = obj.get("to_user").and_then(|v| v.as_str()).unwrap_or("");
+                let ok_to = obj.get("to_user").and_then(|v| v.as_str()).unwrap_or("");
                 let ok_amount = obj.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let consumed  = obj.get("consumed").and_then(|v| v.as_bool()).unwrap_or(true);
+                let consumed = obj
+                    .get("consumed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 ok_to == to_user && (ok_amount - amount).abs() < 0.01 && !consumed
             })
             .unwrap_or(false);
@@ -102,14 +125,15 @@ impl Tool for TransferFundsTool {
             ));
         }
 
-        let db: Arc<BankDatabase> = ctx.resolve_context()
-            .resolve_external::<Arc<BankDatabase>>()
-            .await
-            .map_err(|e| AgtrsError::ToolCallFailed { tool_name: "dependency".into(), reason: format!("BankDatabase unavailable: {e}") })?;
-
-        match db.transfer(&auth_uid, &to_user, amount).await {
-            Ok(tx)  => Ok(ToolResult::ok(format!("Transfer successful: {}", tx.description), &ctx.tool_use_id)),
-            Err(e)  => Ok(ToolResult::error(format!("Transfer failed: {}", e), &ctx.tool_use_id)),
+        match self.db.transfer(auth_uid, &to_user, amount).await {
+            Ok(tx) => Ok(ToolResult::ok(
+                format!("Transfer successful: {}", tx.description),
+                &ctx.tool_use_id,
+            )),
+            Err(e) => Ok(ToolResult::error(
+                format!("Transfer failed: {}", e),
+                &ctx.tool_use_id,
+            )),
         }
     }
 }
@@ -117,40 +141,53 @@ impl Tool for TransferFundsTool {
 // ── GetTransactionHistoryTool ─────────────────────────────────────────────────
 
 /// Tool to get transaction history for the authenticated user.
-/// Zero-dep unit struct — resolves BankDatabase from the DI container at call time.
 #[injectable]
-pub struct GetTransactionHistoryTool;
+pub struct GetTransactionHistoryTool {
+    #[injectable(inject)]
+    db: Arc<BankDatabase>,
+}
 
-#[async_trait::async_trait]
-impl Tool for GetTransactionHistoryTool {
-    fn name(&self) -> &str { "get_transaction_history" }
-
-    fn description(&self) -> &str {
-        "Get transaction history for the authenticated user"
-    }
-
-    fn schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "required": [] })
-    }
-
-    async fn call(&self, _input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
-        let auth_uid = ctx.state.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+#[tool(name = "get_transaction_history")]
+impl GetTransactionHistoryTool {
+    /// Get transaction history for the authenticated user.
+    #[agtrs(tool_run)]
+    pub async fn run(
+        &self,
+        #[agtrs(tool_param(description = "The user ID the customer identified themselves as"))]
+        user_id: String,
+        ctx: &ToolContext,
+    ) -> Result<ToolResult, AgtrsError> {
+        let auth_uid = ctx
+            .state
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if auth_uid.is_empty() {
-            return Ok(ToolResult::error("User not authenticated", &ctx.tool_use_id));
+            return Ok(ToolResult::error(
+                "User not authenticated",
+                &ctx.tool_use_id,
+            ));
+        }
+        if user_id != auth_uid {
+            return Ok(ToolResult::error(
+                format!("Access denied: authenticated as '{auth_uid}', not '{user_id}'"),
+                &ctx.tool_use_id,
+            ));
         }
 
-        let db: Arc<BankDatabase> = ctx.resolve_context()
-            .resolve_external::<Arc<BankDatabase>>()
-            .await
-            .map_err(|e| AgtrsError::ToolCallFailed { tool_name: "dependency".into(), reason: format!("BankDatabase unavailable: {e}") })?;
-
-        let transactions = db.get_transactions(auth_uid).await;
+        let transactions = self.db.get_transactions(auth_uid).await;
         if transactions.is_empty() {
             return Ok(ToolResult::ok("No transactions found.", &ctx.tool_use_id));
         }
 
-        let output: Vec<String> = transactions.iter()
-            .map(|tx| format!("{}: {} (${:.2}) - {}", tx.timestamp, tx.description, tx.amount, tx.to_name))
+        let output: Vec<String> = transactions
+            .iter()
+            .map(|tx| {
+                format!(
+                    "{}: {} (${:.2}) - {}",
+                    tx.timestamp, tx.description, tx.amount, tx.to_name
+                )
+            })
             .collect();
 
         Ok(ToolResult::ok(output.join("\n"), &ctx.tool_use_id))
@@ -162,103 +199,196 @@ impl Tool for GetTransactionHistoryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use injectable::prelude::*;
-    use std::collections::HashMap;
+    use injectable_runtime::{EmptySingletonStore, ResolveContext};
+    use serde_json::json;
 
-    /// Build a ToolContext backed by a real injectable container that has BankDatabase.
-    async fn make_ctx_with_db(user_id: &str) -> (ToolContext, Arc<BankDatabase>) {
-        let container = Container::builder().build().await.unwrap();
-        let db: Arc<BankDatabase> = container
-            .resolve_external::<Arc<BankDatabase>>()
-            .await
-            .unwrap();
-        let resolve_ctx = Arc::new(container.context().clone());
+    fn make_db() -> Arc<BankDatabase> {
+        Arc::new(BankDatabase::new())
+    }
+
+    fn make_ctx(user_id: &str) -> ToolContext {
+        let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
         let mut ctx = ToolContext::new("test_tool_call", resolve_ctx);
         if !user_id.is_empty() {
             ctx.state.insert("user_id".into(), json!(user_id));
         }
-        (ctx, db)
-    }
-
-    async fn make_ctx_with_approval(user_id: &str, to_user: &str, amount: f64) -> ToolContext {
-        let (mut ctx, _) = make_ctx_with_db(user_id).await;
-        ctx.state.insert("transfer_approved".into(), json!({
-            "to_user": to_user, "amount": amount, "consumed": false
-        }));
         ctx
     }
 
+    fn make_ctx_with_approval(user_id: &str, to_user: &str, amount: f64) -> ToolContext {
+        let mut ctx = make_ctx(user_id);
+        ctx.state.insert(
+            "transfer_approved".into(),
+            json!({
+                "to_user": to_user, "amount": amount, "consumed": false
+            }),
+        );
+        ctx
+    }
+
+    // ── GetBalanceTool ──────────────────────────────────────────────────────
+
     #[tokio::test]
     async fn test_get_balance_authenticated() {
-        let (ctx, _) = make_ctx_with_db("alice").await;
-        let result = GetBalanceTool.call(json!({}), &ctx).await.unwrap();
+        let tool = GetBalanceTool { db: make_db() };
+        let ctx = make_ctx("alice");
+        let result = tool.call(json!({"user_id": "alice"}), &ctx).await.unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("5000"));
     }
 
     #[tokio::test]
     async fn test_get_balance_unauthenticated() {
-        let (ctx, _) = make_ctx_with_db("").await;
-        let result = GetBalanceTool.call(json!({}), &ctx).await.unwrap();
+        let tool = GetBalanceTool { db: make_db() };
+        let ctx = make_ctx("");
+        let result = tool.call(json!({"user_id": "alice"}), &ctx).await.unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("not authenticated"));
     }
 
     #[tokio::test]
+    async fn test_get_balance_mismatched_user_id() {
+        let tool = GetBalanceTool { db: make_db() };
+        let ctx = make_ctx("alice");
+        let result = tool.call(json!({"user_id": "bob"}), &ctx).await.unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("Access denied"));
+        assert!(result.content.contains("alice"));
+    }
+
+    #[tokio::test]
     async fn test_get_balance_unknown_user() {
-        let (ctx, _) = make_ctx_with_db("unknown").await;
-        let result = GetBalanceTool.call(json!({}), &ctx).await.unwrap();
+        let tool = GetBalanceTool { db: make_db() };
+        let ctx = make_ctx("unknown");
+        let result = tool
+            .call(json!({"user_id": "unknown"}), &ctx)
+            .await
+            .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("not found"));
     }
 
+    // ── TransferFundsTool ───────────────────────────────────────────────────
+
     #[tokio::test]
     async fn test_transfer_funds_without_approval() {
-        let (ctx, _) = make_ctx_with_db("alice").await;
-        let result = TransferFundsTool.call(json!({"to_user": "bob", "amount": 100}), &ctx).await.unwrap();
+        let tool = TransferFundsTool { db: make_db() };
+        let ctx = make_ctx("alice");
+        let result = tool
+            .call(
+                json!({"user_id": "alice", "to_user": "bob", "amount": 100}),
+                &ctx,
+            )
+            .await
+            .unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("approval"));
     }
 
     #[tokio::test]
     async fn test_transfer_funds_with_approval() {
-        let ctx = make_ctx_with_approval("alice", "bob", 100.0).await;
-        let result = TransferFundsTool.call(json!({"to_user": "bob", "amount": 100}), &ctx).await.unwrap();
+        let tool = TransferFundsTool { db: make_db() };
+        let ctx = make_ctx_with_approval("alice", "bob", 100.0);
+        let result = tool
+            .call(
+                json!({"user_id": "alice", "to_user": "bob", "amount": 100}),
+                &ctx,
+            )
+            .await
+            .unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("successful"));
     }
 
     #[tokio::test]
     async fn test_transfer_funds_unauthenticated() {
-        let (ctx, _) = make_ctx_with_db("").await;
-        let result = TransferFundsTool.call(json!({"to_user": "bob", "amount": 100}), &ctx).await.unwrap();
+        let tool = TransferFundsTool { db: make_db() };
+        let ctx = make_ctx("");
+        let result = tool
+            .call(
+                json!({"user_id": "alice", "to_user": "bob", "amount": 100}),
+                &ctx,
+            )
+            .await
+            .unwrap();
         assert!(result.is_error);
+        assert!(result.content.contains("not authenticated"));
     }
 
     #[tokio::test]
+    async fn test_transfer_funds_mismatched_user_id() {
+        let tool = TransferFundsTool { db: make_db() };
+        let ctx = make_ctx("alice");
+        let result = tool
+            .call(
+                json!({"user_id": "charlie", "to_user": "bob", "amount": 100}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("Access denied"));
+    }
+
+    // ── GetTransactionHistoryTool ───────────────────────────────────────────
+
+    #[tokio::test]
     async fn test_transaction_history_no_transactions() {
-        let (ctx, _) = make_ctx_with_db("alice").await;
-        let result = GetTransactionHistoryTool.call(json!({}), &ctx).await.unwrap();
+        let tool = GetTransactionHistoryTool { db: make_db() };
+        let ctx = make_ctx("alice");
+        let result = tool.call(json!({"user_id": "alice"}), &ctx).await.unwrap();
         assert!(!result.is_error);
         assert!(result.content.contains("No transactions"));
     }
 
     #[tokio::test]
     async fn test_transaction_history_unauthenticated() {
-        let (ctx, _) = make_ctx_with_db("").await;
-        let result = GetTransactionHistoryTool.call(json!({}), &ctx).await.unwrap();
+        let tool = GetTransactionHistoryTool { db: make_db() };
+        let ctx = make_ctx("");
+        let result = tool.call(json!({"user_id": "alice"}), &ctx).await.unwrap();
         assert!(result.is_error);
+        assert!(result.content.contains("not authenticated"));
     }
+
+    #[tokio::test]
+    async fn test_transaction_history_mismatched_user_id() {
+        let tool = GetTransactionHistoryTool { db: make_db() };
+        let ctx = make_ctx("alice");
+        let result = tool.call(json!({"user_id": "bob"}), &ctx).await.unwrap();
+        assert!(result.is_error);
+        assert!(result.content.contains("Access denied"));
+    }
+
+    // ── Schema / metadata ──────────────────────────────────────────────────
 
     #[test]
     fn test_tool_names_and_schemas() {
-        assert_eq!(GetBalanceTool.name(), "get_balance");
-        assert!(!GetBalanceTool.description().is_empty());
-        assert!(GetBalanceTool.schema().is_object());
+        let db = make_db();
 
-        assert_eq!(TransferFundsTool.name(), "transfer_funds");
-        assert!(TransferFundsTool.schema().get("required").is_some());
+        let balance_tool = GetBalanceTool {
+            db: Arc::clone(&db),
+        };
+        assert_eq!(balance_tool.name(), "get_balance");
+        assert!(!balance_tool.description().is_empty());
+        let schema = balance_tool.schema();
+        assert!(schema.is_object());
+        assert!(schema["properties"]["user_id"].is_object());
 
-        assert_eq!(GetTransactionHistoryTool.name(), "get_transaction_history");
+        let transfer_tool = TransferFundsTool {
+            db: Arc::clone(&db),
+        };
+        assert_eq!(transfer_tool.name(), "transfer_funds");
+        assert!(transfer_tool.requires_confirmation());
+        let schema = transfer_tool.schema();
+        assert!(schema["properties"]["user_id"].is_object());
+        assert!(schema["properties"]["to_user"].is_object());
+        assert!(schema["properties"]["amount"].is_object());
+
+        let history_tool = GetTransactionHistoryTool {
+            db: Arc::clone(&db),
+        };
+        assert_eq!(history_tool.name(), "get_transaction_history");
+        let schema = history_tool.schema();
+        assert!(schema["properties"]["user_id"].is_object());
     }
 }

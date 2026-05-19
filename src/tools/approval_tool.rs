@@ -16,6 +16,9 @@ pub struct ApprovalTool;
 
 #[async_trait::async_trait]
 impl Tool for ApprovalTool {
+    type Inputs = serde_json::Value;
+    type Output = ToolResult;
+
     fn name(&self) -> &str {
         "request_approval"
     }
@@ -36,28 +39,58 @@ impl Tool for ApprovalTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
-        let approval_service: Arc<ApprovalService> = ctx.resolve_context()
+        let approval_service: Arc<ApprovalService> = ctx
+            .resolve_context()
             .resolve_external::<Arc<ApprovalService>>()
             .await
-            .map_err(|e| AgtrsError::ToolCallFailed { tool_name: "dependency".into(), reason: format!("ApprovalService unavailable: {e}") })?;
+            .map_err(|e| AgtrsError::ToolCallFailed {
+                tool_name: "dependency".into(),
+                reason: format!("ApprovalService unavailable: {e}"),
+            })?;
 
-        let signal_bus: Arc<AppSignalBus> = ctx.resolve_context()
+        let signal_bus: Arc<AppSignalBus> = ctx
+            .resolve_context()
             .resolve_external::<Arc<AppSignalBus>>()
             .await
-            .map_err(|e| AgtrsError::ToolCallFailed { tool_name: "dependency".into(), reason: format!("AppSignalBus unavailable: {e}") })?;
+            .map_err(|e| AgtrsError::ToolCallFailed {
+                tool_name: "dependency".into(),
+                reason: format!("AppSignalBus unavailable: {e}"),
+            })?;
 
-        let conversation_id = ctx.state.get("conversation_id")
-            .and_then(|v| v.as_str()).unwrap_or("default").to_string();
-        let auth_uid = ctx.state.get("user_id")
-            .and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let action_type = input.get("action_type")
-            .and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-        let details_str = input.get("details").and_then(|v| v.as_str()).unwrap_or("{}");
+        let conversation_id = ctx
+            .state
+            .get("conversation_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default")
+            .to_string();
+        let auth_uid = ctx
+            .state
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let action_type = input
+            .get("action_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let details_str = input
+            .get("details")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
         let details: Value = serde_json::from_str(details_str).unwrap_or_default();
         let details_clone = details.clone();
 
         let (tx, rx) = oneshot::channel();
-        approval_service.create_pending_approval(&conversation_id, &auth_uid, &action_type, details.clone(), tx).await;
+        approval_service
+            .create_pending_approval(
+                &conversation_id,
+                &auth_uid,
+                &action_type,
+                details.clone(),
+                tx,
+            )
+            .await;
 
         signal_bus.emit(crate::signals::bus::AppSignal::ToolPendingApproval {
             conversation_id: conversation_id.clone(),
@@ -68,13 +101,25 @@ impl Tool for ApprovalTool {
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(true)) => {
                 approval_service.mark_approved(&conversation_id, &details_clone);
-                Ok(ToolResult::ok("Approval granted. You may proceed with the action.", &ctx.tool_use_id))
+                Ok(ToolResult::ok(
+                    "Approval granted. You may proceed with the action.",
+                    &ctx.tool_use_id,
+                ))
             }
-            Ok(Ok(false)) => Ok(ToolResult::ok("Approval denied by the user. Do not proceed.", &ctx.tool_use_id)),
-            Ok(Err(_))    => Ok(ToolResult::ok("Approval request was cancelled.", &ctx.tool_use_id)),
+            Ok(Ok(false)) => Ok(ToolResult::ok(
+                "Approval denied by the user. Do not proceed.",
+                &ctx.tool_use_id,
+            )),
+            Ok(Err(_)) => Ok(ToolResult::ok(
+                "Approval request was cancelled.",
+                &ctx.tool_use_id,
+            )),
             Err(_) => {
                 approval_service.cancel_approval(&conversation_id).await;
-                Ok(ToolResult::ok("Approval request timed out after 30 seconds.", &ctx.tool_use_id))
+                Ok(ToolResult::ok(
+                    "Approval request timed out after 30 seconds.",
+                    &ctx.tool_use_id,
+                ))
             }
         }
     }
@@ -92,7 +137,8 @@ mod tests {
         if !user_id.is_empty() {
             ctx.state.insert("user_id".into(), json!(user_id));
         }
-        ctx.state.insert("conversation_id".into(), json!(conversation_id));
+        ctx.state
+            .insert("conversation_id".into(), json!(conversation_id));
         ctx
     }
 
@@ -106,8 +152,11 @@ mod tests {
     #[tokio::test]
     async fn test_approval_tool_creates_pending() {
         let ctx = make_tool_ctx("alice", "conv1").await;
-        let approval_service: Arc<ApprovalService> = ctx.resolve_context()
-            .resolve_external::<Arc<ApprovalService>>().await.unwrap();
+        let approval_service: Arc<ApprovalService> = ctx
+            .resolve_context()
+            .resolve_external::<Arc<ApprovalService>>()
+            .await
+            .unwrap();
 
         let ctx_clone = {
             let resolve_ctx = Arc::new(ctx.resolve_context().clone());

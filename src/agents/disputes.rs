@@ -20,11 +20,16 @@ use crate::tools::check_auth::CheckAuthenticationTool;
                    all relevant information before initiating a dispute. If the user wants \
                    to make a transfer or has general account questions, hand off to the \
                    appropriate specialist agent.",
-    tools(GetBalanceTool, GetTransactionHistoryTool, CheckAuthenticationTool,
-          HandoffToCrmTool, HandoffToTransferTool),
+    tools(
+        GetBalanceTool,
+        GetTransactionHistoryTool,
+        CheckAuthenticationTool,
+        HandoffToCrmTool,
+        HandoffToTransferTool
+    ),
     max_turns = 6,
     temperature = 0.3,
-    scope = "singleton",
+    scope = "singleton"
 )]
 #[injectable]
 pub struct DisputesAgent {

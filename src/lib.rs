@@ -15,10 +15,12 @@ pub mod signals;
 pub mod tools;
 pub mod ws;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use agtrs::prelude::*;
 use injectable::prelude::*;
+use tokio::sync::RwLock;
 
 use agents::active_agent_store::ActiveAgentStore;
 use agents::auth_crm::AuthenticatedCrmAgent;
@@ -57,6 +59,23 @@ pub struct AppState {
     pub disputes_agent: Arc<DisputesAgent>,
     /// Shared ResolveContext — passed to AgentContext so tools can resolve services.
     pub resolve_ctx: Arc<injectable_runtime::ResolveContext>,
+    /// The LLM provider — passed to AgentContext for streaming calls.
+    pub llm: Arc<dyn LlmProvider>,
+    /// Shared conversation history store: conversation_id -> Vec<Message>.
+    pub conversation_history: Arc<RwLock<HashMap<String, Vec<Message>>>>,
+}
+
+impl AppState {
+    /// Get an agent arc by logical name.
+    pub fn get_agent_by_name(&self, name: &str) -> Option<Arc<dyn Agent>> {
+        match name {
+            "unauthenticated_crm" => Some(Arc::clone(&self.unauth_agent) as Arc<dyn Agent>),
+            "authenticated_crm" => Some(Arc::clone(&self.auth_agent) as Arc<dyn Agent>),
+            "bank_transfer" => Some(Arc::clone(&self.transfer_agent) as Arc<dyn Agent>),
+            "disputes" => Some(Arc::clone(&self.disputes_agent) as Arc<dyn Agent>),
+            _ => None,
+        }
+    }
 }
 
 /// Build the application state using the injectable container.
@@ -70,26 +89,35 @@ pub async fn build_app_state() -> Arc<AppState> {
 
     macro_rules! get {
         ($T:ty) => {
-            container.resolve_external::<Arc<$T>>().await
+            container
+                .resolve_external::<Arc<$T>>()
+                .await
                 .unwrap_or_else(|e| panic!("Failed to resolve {}: {e}", stringify!($T)))
         };
     }
 
+    let llm = container
+        .resolve_external::<Arc<dyn LlmProvider>>()
+        .await
+        .unwrap_or_else(|e| panic!("Failed to resolve LlmProvider: {e}"));
+
     Arc::new(AppState {
-        config:              get!(AppConfig),
-        bank_db:             get!(BankDatabase),
-        crypto_service:      get!(CryptoService),
-        active_agent_store:  get!(ActiveAgentStore),
-        approval_service:    get!(ApprovalService),
-        signal_bus:          get!(AppSignalBus),
-        event_forwarder:     get!(EventForwarder),
-        ws_token_service:    get!(WsTokenService),
-        cost_tracker:        Arc::new(CostTracker::new(Arc::new(PricingTable::default_pricing()))),
-        unauth_agent:        get!(UnauthenticatedCrmAgent),
-        auth_agent:          get!(AuthenticatedCrmAgent),
-        transfer_agent:      get!(BankTransferAgent),
-        disputes_agent:      get!(DisputesAgent),
+        config: get!(AppConfig),
+        bank_db: get!(BankDatabase),
+        crypto_service: get!(CryptoService),
+        active_agent_store: get!(ActiveAgentStore),
+        approval_service: get!(ApprovalService),
+        signal_bus: get!(AppSignalBus),
+        event_forwarder: get!(EventForwarder),
+        ws_token_service: get!(WsTokenService),
+        cost_tracker: Arc::new(CostTracker::new(Arc::new(PricingTable::default_pricing()))),
+        unauth_agent: get!(UnauthenticatedCrmAgent),
+        auth_agent: get!(AuthenticatedCrmAgent),
+        transfer_agent: get!(BankTransferAgent),
+        disputes_agent: get!(DisputesAgent),
         resolve_ctx,
+        llm,
+        conversation_history: Arc::new(RwLock::new(HashMap::new())),
     })
 }
 
@@ -115,8 +143,11 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .merge(metrics::routes::metrics_router())
         .with_state(state);
 
-    let app = app.layer(axum::middleware::from_fn(middleware::logging::timing_middleware));
-    app.layer(middleware::cors::cors_layer()).layer(TraceLayer::new_for_http())
+    let app = app.layer(axum::middleware::from_fn(
+        middleware::logging::timing_middleware,
+    ));
+    app.layer(middleware::cors::cors_layer())
+        .layer(TraceLayer::new_for_http())
 }
 
 /// Test utilities module.

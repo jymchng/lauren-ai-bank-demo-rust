@@ -21,11 +21,16 @@ use crate::tools::check_auth::CheckAuthenticationTool;
                    Be precise with amounts and account numbers. If the user has questions \
                    about their account or wants to dispute a transaction, hand off to the \
                    appropriate specialist agent.",
-    tools(TransferFundsTool, ApprovalTool, CheckAuthenticationTool,
-          HandoffToCrmTool, HandoffToDisputesTool),
+    tools(
+        TransferFundsTool,
+        ApprovalTool,
+        CheckAuthenticationTool,
+        HandoffToCrmTool,
+        HandoffToDisputesTool
+    ),
     max_turns = 6,
     temperature = 0.3,
-    scope = "singleton",
+    scope = "singleton"
 )]
 #[injectable]
 pub struct BankTransferAgent {

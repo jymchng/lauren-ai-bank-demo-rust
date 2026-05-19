@@ -1,8 +1,8 @@
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-use injectable::prelude::*;
 use crate::config::AppConfig;
+use injectable::prelude::*;
 
 type HmacSha256 = Hmac<Sha256>;
 
