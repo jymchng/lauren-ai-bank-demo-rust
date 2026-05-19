@@ -10,9 +10,13 @@ use crate::approval::service::ApprovalService;
 use crate::signals::bus::AppSignalBus;
 
 /// Tool to request human approval for a pending action.
-/// Zero-dep unit struct — resolves ApprovalService and AppSignalBus from DI container.
 #[injectable]
-pub struct ApprovalTool;
+pub struct ApprovalTool {
+    #[injectable(inject)]
+    approval_service: Arc<ApprovalService>,
+    #[injectable(inject)]
+    signal_bus: Arc<AppSignalBus>,
+}
 
 #[async_trait::async_trait]
 impl Tool for ApprovalTool {
@@ -39,24 +43,6 @@ impl Tool for ApprovalTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
-        let approval_service: Arc<ApprovalService> = ctx
-            .resolve_context()
-            .resolve_external::<Arc<ApprovalService>>()
-            .await
-            .map_err(|e| AgtrsError::ToolCallFailed {
-                tool_name: "dependency".into(),
-                reason: format!("ApprovalService unavailable: {e}"),
-            })?;
-
-        let signal_bus: Arc<AppSignalBus> = ctx
-            .resolve_context()
-            .resolve_external::<Arc<AppSignalBus>>()
-            .await
-            .map_err(|e| AgtrsError::ToolCallFailed {
-                tool_name: "dependency".into(),
-                reason: format!("AppSignalBus unavailable: {e}"),
-            })?;
-
         let conversation_id = ctx
             .state
             .get("conversation_id")
@@ -82,7 +68,7 @@ impl Tool for ApprovalTool {
         let details_clone = details.clone();
 
         let (tx, rx) = oneshot::channel();
-        approval_service
+        self.approval_service
             .create_pending_approval(
                 &conversation_id,
                 &auth_uid,
@@ -111,19 +97,20 @@ impl Tool for ApprovalTool {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        signal_bus.emit(crate::signals::bus::AppSignal::ToolPendingApproval {
-            approval_id: conversation_id.clone(),
-            from_user: auth_uid.clone(),
-            to_user,
-            amount_usd,
-            description,
-            conversation_id: conversation_id.clone(),
-            created_at_ms,
-        });
+        self.signal_bus
+            .emit(crate::signals::bus::AppSignal::ToolPendingApproval {
+                approval_id: conversation_id.clone(),
+                from_user: auth_uid.clone(),
+                to_user,
+                amount_usd,
+                description,
+                conversation_id: conversation_id.clone(),
+                created_at_ms,
+            });
 
         match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(true)) => {
-                approval_service
+                self.approval_service
                     .mark_approved(&conversation_id, &details_clone)
                     .await;
                 Ok(ToolResult::ok(
@@ -140,7 +127,9 @@ impl Tool for ApprovalTool {
                 &ctx.tool_use_id,
             )),
             Err(_) => {
-                approval_service.cancel_approval(&conversation_id).await;
+                self.approval_service
+                    .cancel_approval(&conversation_id)
+                    .await;
                 Ok(ToolResult::ok(
                     "Approval request timed out after 30 seconds.",
                     &ctx.tool_use_id,
@@ -153,12 +142,10 @@ impl Tool for ApprovalTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use injectable::prelude::*;
+    use crate::test_utils::create_test_state;
 
     async fn make_tool_ctx(user_id: &str, conversation_id: &str) -> ToolContext {
-        let container = Container::builder().build().await.unwrap();
-        let resolve_ctx = Arc::new(container.context().clone());
-        let mut ctx = ToolContext::new("test_tool_call", resolve_ctx);
+        let mut ctx = ToolContext::new("test_tool_call");
         if !user_id.is_empty() {
             ctx.state.insert("user_id".into(), json!(user_id));
         }
@@ -169,32 +156,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_approval_tool_name_and_schema() {
-        assert_eq!(ApprovalTool.name(), "request_approval");
-        assert!(ApprovalTool.schema().is_object());
-        assert!(ApprovalTool.description().contains("approval"));
+        let state = create_test_state().await;
+        let tool: Arc<ApprovalTool> = state.container().resolve_external().await.unwrap();
+        assert_eq!(tool.name(), "request_approval");
+        assert!(tool.schema().is_object());
+        assert!(tool.description().contains("approval"));
     }
 
     #[tokio::test]
     async fn test_approval_tool_creates_pending() {
+        let state = create_test_state().await;
+        let tool: Arc<ApprovalTool> = state.container().resolve_external().await.unwrap();
+        let approval_service: Arc<ApprovalService> =
+            state.container().resolve_external().await.unwrap();
+
         let ctx = make_tool_ctx("alice", "conv1").await;
-        let approval_service: Arc<ApprovalService> = ctx
-            .resolve_context()
-            .resolve_external::<Arc<ApprovalService>>()
-            .await
-            .unwrap();
 
-        let ctx_clone = {
-            let resolve_ctx = Arc::new(ctx.resolve_context().clone());
-            let mut c = ToolContext::new("t1", resolve_ctx);
-            c.state = ctx.state.clone();
-            c
-        };
-
+        let tool_clone = Arc::clone(&tool);
+        let ctx_clone = ctx.clone();
         let handle = tokio::spawn(async move {
-            let _ = ApprovalTool.call(
-                json!({"action_type": "transfer", "details": "{\"to_user\":\"bob\",\"amount\":100}"}),
-                &ctx_clone,
-            ).await;
+            let _ = tool_clone
+                .call(
+                    json!({"action_type": "transfer", "details": "{\"to_user\":\"bob\",\"amount\":100}"}),
+                    &ctx_clone,
+                )
+                .await;
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

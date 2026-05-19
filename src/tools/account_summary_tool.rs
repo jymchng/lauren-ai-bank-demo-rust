@@ -43,8 +43,6 @@ impl AccountSummaryTool {
 mod tests {
     use super::*;
     use agtrs::prelude::*;
-    use injectable_runtime::{EmptySingletonStore, ResolveContext};
-    use std::sync::Arc;
 
     #[tokio::test]
     async fn account_summary_tool_schema_has_required_fields() {
@@ -63,8 +61,7 @@ mod tests {
     #[tokio::test]
     async fn account_summary_tool_call_with_valid_input() {
         let tool = AccountSummaryTool;
-        let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
-        let mut ctx = ToolContext::new("test-id", resolve_ctx);
+        let mut ctx = ToolContext::new("test-id");
         ctx.state
             .insert("user_id".to_string(), serde_json::json!("alice"));
 

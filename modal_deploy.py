@@ -19,13 +19,10 @@ Deploy
 The public HTTPS URL is printed after deploy.
 """
 
-import os
-
-import modal
-
 # ── Paths (resolved on the deploying machine) ─────────────────────────────────
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+ROOT = HERE.parent
 AGTRS_DIR = os.path.normpath(os.path.join(HERE, "../agtrs"))
 INJECTABLE_DIR = os.path.normpath(os.path.join(HERE, "../injectable"))
 
@@ -37,6 +34,34 @@ INJECTABLE_DIR = os.path.normpath(os.path.join(HERE, "../injectable"))
 #   /build/app/../agtrs       → /build/agtrs       ✓
 #   /build/app/../injectable  → /build/injectable   ✓
 
+import os
+import subprocess
+from pathlib import Path
+
+import modal
+
+
+def git_tracked_files(repo: Path):
+    out = subprocess.check_output(
+        ["git", "-C", str(repo), "ls-files", "-z"]
+    )
+    return [
+        repo / Path(p)
+        for p in out.decode().split("\0")
+        if p
+    ]
+
+
+def add_git_tracked_dir(image: modal.Image, src: Path, dest_root: str):
+    for file in git_tracked_files(src):
+        rel = file.relative_to(src)
+        image = image.add_local_file(
+            str(file),
+            remote_path=f"{dest_root}/{rel}",
+        )
+    return image
+
+
 image = (
     modal.Image.debian_slim()
     .apt_install(
@@ -47,33 +72,21 @@ image = (
         "ca-certificates",
     )
     .run_commands(
-        "curl https://sh.rustup.rs -sSf | sh -s -- -y"
-        " --default-toolchain stable --profile minimal",
+        "curl https://sh.rustup.rs -sSf | sh -s -- -y "
+        "--default-toolchain stable --profile minimal",
     )
-    .add_local_dir(
-        HERE,
-        "/build/app",
-        copy=True,
-        ignore=["target", ".git"],
-    )
-    .add_local_dir(
-        AGTRS_DIR,
-        "/build/agtrs",
-        copy=True,
-        ignore=["target", ".git"],
-    )
-    .add_local_dir(
-        INJECTABLE_DIR,
-        "/build/injectable",
-        copy=True,
-        ignore=["target", ".git", "injectable-target"],
-    )
-    .run_commands(
-        "export PATH=$HOME/.cargo/bin:$PATH"
-        " && cd /build/app && cargo build --release",
-        "cp /build/app/target/release/lauren-chatbot /usr/local/bin/lauren-chatbot",
-        "chmod +x /usr/local/bin/lauren-chatbot",
-    )
+)
+
+# Copy only git-tracked files
+image = add_git_tracked_dir(image, HERE, "/build/app")
+image = add_git_tracked_dir(image, AGTRS_DIR, "/build/agtrs")
+image = add_git_tracked_dir(image, INJECTABLE_DIR, "/build/injectable")
+
+image = image.run_commands(
+    "export PATH=$HOME/.cargo/bin:$PATH"
+    " && cd /build/app && cargo build --release",
+    "cp /build/app/target/release/lauren-chatbot /usr/local/bin/lauren-chatbot",
+    "chmod +x /usr/local/bin/lauren-chatbot",
 )
 
 # ── App ───────────────────────────────────────────────────────────────────────

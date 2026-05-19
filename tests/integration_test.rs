@@ -623,8 +623,7 @@ async fn test_get_balance_tool_returns_alice_balance() {
 
     let state = build_test_state().await;
     let tool: Arc<GetBalanceTool> = state.container().resolve_external().await.unwrap();
-    let resolve_ctx = Arc::new(state.container().context().clone());
-    let mut tool_ctx = ToolContext::new("tu-alice", resolve_ctx);
+    let mut tool_ctx = ToolContext::new("tu-alice");
     tool_ctx
         .state
         .insert("user_id".to_string(), serde_json::json!("alice"));
@@ -652,8 +651,7 @@ async fn test_get_balance_tool_without_user_id_returns_error() {
 
     let state = build_test_state().await;
     let tool: Arc<GetBalanceTool> = state.container().resolve_external().await.unwrap();
-    let resolve_ctx = Arc::new(state.container().context().clone());
-    let tool_ctx = ToolContext::new("tu-noauth", resolve_ctx);
+    let tool_ctx = ToolContext::new("tu-noauth");
 
     let result = tool
         .call(serde_json::json!({"user_id": "alice"}), &tool_ctx)
@@ -672,8 +670,7 @@ async fn test_get_balance_tool_for_unknown_user_returns_error() {
 
     let state = build_test_state().await;
     let tool: Arc<GetBalanceTool> = state.container().resolve_external().await.unwrap();
-    let resolve_ctx = Arc::new(state.container().context().clone());
-    let mut tool_ctx = ToolContext::new("tu-unknown", resolve_ctx);
+    let mut tool_ctx = ToolContext::new("tu-unknown");
     tool_ctx
         .state
         .insert("user_id".to_string(), serde_json::json!("nobody_xyz"));
@@ -692,8 +689,7 @@ async fn test_transfer_tool_requires_prior_approval() {
 
     let state = build_test_state().await;
     let tool: Arc<TransferFundsTool> = state.container().resolve_external().await.unwrap();
-    let resolve_ctx = Arc::new(state.container().context().clone());
-    let mut tool_ctx = ToolContext::new("tu-transfer", resolve_ctx);
+    let mut tool_ctx = ToolContext::new("tu-transfer");
     tool_ctx
         .state
         .insert("user_id".to_string(), serde_json::json!("alice"));
@@ -724,8 +720,7 @@ async fn test_transfer_tool_succeeds_with_approved_token() {
 
     let state = build_test_state().await;
     let tool: Arc<TransferFundsTool> = state.container().resolve_external().await.unwrap();
-    let resolve_ctx = Arc::new(state.container().context().clone());
-    let mut tool_ctx = ToolContext::new("tu-transfer-ok", resolve_ctx);
+    let mut tool_ctx = ToolContext::new("tu-transfer-ok");
     tool_ctx
         .state
         .insert("user_id".to_string(), serde_json::json!("alice"));

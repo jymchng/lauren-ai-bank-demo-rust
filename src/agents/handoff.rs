@@ -6,23 +6,14 @@ use serde_json::{json, Value};
 
 use crate::agents::active_agent_store::ActiveAgentStore;
 
-// ── Helper to get ActiveAgentStore from DI context ────────────────────────────
-
-async fn get_store(ctx: &ToolContext) -> Result<Arc<ActiveAgentStore>, AgtrsError> {
-    ctx.resolve_context()
-        .resolve_external::<Arc<ActiveAgentStore>>()
-        .await
-        .map_err(|e| AgtrsError::ToolCallFailed {
-            tool_name: "dependency".into(),
-            reason: format!("ActiveAgentStore unavailable: {e}"),
-        })
-}
-
 // ── HandoffToCrmTool ──────────────────────────────────────────────────────────
 
 /// Tool to hand off to the Authenticated CRM agent.
 #[injectable]
-pub struct HandoffToCrmTool;
+pub struct HandoffToCrmTool {
+    #[injectable(inject)]
+    store: Arc<ActiveAgentStore>,
+}
 
 #[async_trait::async_trait]
 impl Tool for HandoffToCrmTool {
@@ -40,7 +31,6 @@ impl Tool for HandoffToCrmTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
-        let store = get_store(ctx).await?;
         let reason = input
             .get("reason")
             .and_then(|v| v.as_str())
@@ -51,10 +41,10 @@ impl Tool for HandoffToCrmTool {
             .get("conversation_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
-        store
+        self.store
             .set_active_agent(conv_id, "Banking CRM Agent (Authenticated)")
             .await;
-        store.set_pending_summary(conv_id, &reason).await;
+        self.store.set_pending_summary(conv_id, &reason).await;
         Ok(ToolResult::ok(
             format!("Handed off to Banking CRM Agent (Authenticated): {reason}"),
             &ctx.tool_use_id,
@@ -66,7 +56,10 @@ impl Tool for HandoffToCrmTool {
 
 /// Tool to hand off to the Bank Transfer agent.
 #[injectable]
-pub struct HandoffToTransferTool;
+pub struct HandoffToTransferTool {
+    #[injectable(inject)]
+    store: Arc<ActiveAgentStore>,
+}
 
 #[async_trait::async_trait]
 impl Tool for HandoffToTransferTool {
@@ -84,7 +77,6 @@ impl Tool for HandoffToTransferTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
-        let store = get_store(ctx).await?;
         let reason = input
             .get("reason")
             .and_then(|v| v.as_str())
@@ -95,10 +87,10 @@ impl Tool for HandoffToTransferTool {
             .get("conversation_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
-        store
+        self.store
             .set_active_agent(conv_id, "Banking Transfer Agent")
             .await;
-        store.set_pending_summary(conv_id, &reason).await;
+        self.store.set_pending_summary(conv_id, &reason).await;
         Ok(ToolResult::ok(
             format!("Handed off to Banking Transfer Agent: {reason}"),
             &ctx.tool_use_id,
@@ -110,7 +102,10 @@ impl Tool for HandoffToTransferTool {
 
 /// Tool to hand off to the Disputes agent.
 #[injectable]
-pub struct HandoffToDisputesTool;
+pub struct HandoffToDisputesTool {
+    #[injectable(inject)]
+    store: Arc<ActiveAgentStore>,
+}
 
 #[async_trait::async_trait]
 impl Tool for HandoffToDisputesTool {
@@ -128,7 +123,6 @@ impl Tool for HandoffToDisputesTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
-        let store = get_store(ctx).await?;
         let reason = input
             .get("reason")
             .and_then(|v| v.as_str())
@@ -139,10 +133,10 @@ impl Tool for HandoffToDisputesTool {
             .get("conversation_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
-        store
+        self.store
             .set_active_agent(conv_id, "Banking Disputes Agent")
             .await;
-        store.set_pending_summary(conv_id, &reason).await;
+        self.store.set_pending_summary(conv_id, &reason).await;
         Ok(ToolResult::ok(
             format!("Handed off to Banking Disputes Agent: {reason}"),
             &ctx.tool_use_id,
@@ -154,7 +148,10 @@ impl Tool for HandoffToDisputesTool {
 
 /// Tool to hand off to the Authenticated CRM agent (requires authentication).
 #[injectable]
-pub struct HandoffToAuthenticatedCrmTool;
+pub struct HandoffToAuthenticatedCrmTool {
+    #[injectable(inject)]
+    store: Arc<ActiveAgentStore>,
+}
 
 #[async_trait::async_trait]
 impl Tool for HandoffToAuthenticatedCrmTool {
@@ -183,7 +180,6 @@ impl Tool for HandoffToAuthenticatedCrmTool {
                 &ctx.tool_use_id,
             ));
         }
-        let store = get_store(ctx).await?;
         let reason = input
             .get("reason")
             .and_then(|v| v.as_str())
@@ -194,10 +190,10 @@ impl Tool for HandoffToAuthenticatedCrmTool {
             .get("conversation_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
-        store
+        self.store
             .set_active_agent(conv_id, "Banking CRM Agent (Authenticated)")
             .await;
-        store.set_pending_summary(conv_id, &reason).await;
+        self.store.set_pending_summary(conv_id, &reason).await;
         Ok(ToolResult::ok(
             format!("Handed off to Banking CRM Agent (Authenticated): {reason}"),
             &ctx.tool_use_id,
@@ -210,12 +206,10 @@ impl Tool for HandoffToAuthenticatedCrmTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use injectable::prelude::*;
+    use crate::test_utils::create_test_state;
 
     async fn make_ctx(user_id: &str, conversation_id: &str) -> ToolContext {
-        let container = Container::builder().build().await.unwrap();
-        let resolve_ctx = Arc::new(container.context().clone());
-        let mut ctx = ToolContext::new("test_tool_call", resolve_ctx);
+        let mut ctx = ToolContext::new("test_tool_call");
         if !user_id.is_empty() {
             ctx.state.insert("user_id".into(), json!(user_id));
         }
@@ -224,18 +218,13 @@ mod tests {
         ctx
     }
 
-    async fn get_store_from_ctx(ctx: &ToolContext) -> Arc<ActiveAgentStore> {
-        ctx.resolve_context()
-            .resolve_external::<Arc<ActiveAgentStore>>()
-            .await
-            .unwrap()
-    }
-
     #[tokio::test]
     async fn test_handoff_to_crm() {
+        let state = create_test_state().await;
+        let tool: Arc<HandoffToCrmTool> = state.container().resolve_external().await.unwrap();
+        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("alice", "conv1").await;
-        let store = get_store_from_ctx(&ctx).await;
-        let result = HandoffToCrmTool
+        let result = tool
             .call(json!({"reason": "General help"}), &ctx)
             .await
             .unwrap();
@@ -249,9 +238,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_handoff_to_transfer() {
+        let state = create_test_state().await;
+        let tool: Arc<HandoffToTransferTool> = state.container().resolve_external().await.unwrap();
+        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("alice", "conv1").await;
-        let store = get_store_from_ctx(&ctx).await;
-        let result = HandoffToTransferTool
+        let result = tool
             .call(json!({"reason": "Transfer needed"}), &ctx)
             .await
             .unwrap();
@@ -264,12 +255,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_handoff_to_disputes() {
+        let state = create_test_state().await;
+        let tool: Arc<HandoffToDisputesTool> = state.container().resolve_external().await.unwrap();
+        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("alice", "conv1").await;
-        let store = get_store_from_ctx(&ctx).await;
-        let result = HandoffToDisputesTool
-            .call(json!({"reason": "Dispute"}), &ctx)
-            .await
-            .unwrap();
+        let result = tool.call(json!({"reason": "Dispute"}), &ctx).await.unwrap();
         assert!(!result.is_error);
         assert_eq!(
             store.get_active_agent("conv1").await,
@@ -279,9 +269,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_handoff_to_authenticated_crm_with_auth() {
+        let state = create_test_state().await;
+        let tool: Arc<HandoffToAuthenticatedCrmTool> =
+            state.container().resolve_external().await.unwrap();
+        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("alice", "conv1").await;
-        let store = get_store_from_ctx(&ctx).await;
-        let result = HandoffToAuthenticatedCrmTool
+        let result = tool
             .call(json!({"reason": "Authenticated"}), &ctx)
             .await
             .unwrap();
@@ -294,9 +287,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_handoff_to_authenticated_crm_without_auth() {
+        let state = create_test_state().await;
+        let tool: Arc<HandoffToAuthenticatedCrmTool> =
+            state.container().resolve_external().await.unwrap();
+        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("", "conv1").await;
-        let store = get_store_from_ctx(&ctx).await;
-        let result = HandoffToAuthenticatedCrmTool
+        let result = tool
             .call(json!({"reason": "Unauthenticated"}), &ctx)
             .await
             .unwrap();
@@ -307,11 +303,32 @@ mod tests {
 
     #[test]
     fn test_tool_names() {
-        assert_eq!(HandoffToCrmTool.name(), "handoff_to_crm");
-        assert_eq!(HandoffToTransferTool.name(), "handoff_to_transfer");
-        assert_eq!(HandoffToDisputesTool.name(), "handoff_to_disputes");
         assert_eq!(
-            HandoffToAuthenticatedCrmTool.name(),
+            HandoffToCrmTool {
+                store: Arc::new(ActiveAgentStore::new())
+            }
+            .name(),
+            "handoff_to_crm"
+        );
+        assert_eq!(
+            HandoffToTransferTool {
+                store: Arc::new(ActiveAgentStore::new())
+            }
+            .name(),
+            "handoff_to_transfer"
+        );
+        assert_eq!(
+            HandoffToDisputesTool {
+                store: Arc::new(ActiveAgentStore::new())
+            }
+            .name(),
+            "handoff_to_disputes"
+        );
+        assert_eq!(
+            HandoffToAuthenticatedCrmTool {
+                store: Arc::new(ActiveAgentStore::new())
+            }
+            .name(),
             "handoff_to_authenticated_crm"
         );
     }

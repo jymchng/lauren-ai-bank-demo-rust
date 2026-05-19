@@ -1,6 +1,5 @@
 use agtrs::prelude::*;
 use injectable::prelude::*;
-use injectable_runtime::{EmptySingletonStore, ResolveContext};
 use serde_json::{json, Value};
 
 /// Tool to check if the current user is authenticated.
@@ -54,11 +53,9 @@ impl Tool for CheckAuthenticationTool {
 mod tests {
     use super::*;
     use injectable::prelude::*;
-    use injectable_runtime::{EmptySingletonStore, ResolveContext};
 
     fn make_ctx(user_id: Option<&str>) -> ToolContext {
-        let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
-        let mut ctx = ToolContext::new("test-tool-use-id", resolve_ctx);
+        let mut ctx = ToolContext::new("test-tool-use-id");
         if let Some(uid) = user_id {
             ctx.state
                 .insert("user_id".into(), serde_json::Value::String(uid.to_string()));

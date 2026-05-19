@@ -219,7 +219,6 @@ impl GetTransactionHistoryTool {
 mod tests {
     use super::*;
     use crate::signals::bus::AppSignalBus;
-    use injectable_runtime::{EmptySingletonStore, ResolveContext};
     use serde_json::json;
 
     fn make_db() -> Arc<BankDatabase> {
@@ -235,8 +234,7 @@ mod tests {
     }
 
     fn make_ctx(user_id: &str) -> ToolContext {
-        let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
-        let mut ctx = ToolContext::new("test_tool_call", resolve_ctx);
+        let mut ctx = ToolContext::new("test_tool_call");
         if !user_id.is_empty() {
             ctx.state.insert("user_id".into(), json!(user_id));
         }

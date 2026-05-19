@@ -29,6 +29,21 @@ use crate::signals::bus::AppSignal;
 use crate::signals::bus::AppSignalBus;
 use crate::AppState;
 
+/// Captures the full `axum::http::Extensions` map from request parts so middleware-injected
+/// typed values (e.g. auth tokens) propagate into tool execution.
+struct RequestExtensions(axum::http::Extensions);
+
+#[async_trait::async_trait]
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequestExtensions {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(RequestExtensions(parts.extensions.clone()))
+    }
+}
+
 /// All dependencies needed by the chat stream loop — built once in the handler
 /// and moved into the spawned task.
 struct ChatDeps {
@@ -39,11 +54,13 @@ struct ChatDeps {
     conv_store: Arc<InMemoryConversationStore>,
     llm: Arc<dyn LlmProvider>,
     resolve_ctx: Arc<injectable_runtime::ResolveContext>,
+    extensions: axum::http::Extensions,
 }
 
 /// SSE streaming chat endpoint (authenticated — user_id required in body).
 pub async fn stream_chat(
     State(state): State<AppState>,
+    RequestExtensions(extensions): RequestExtensions,
     store: Inject<ActiveAgentStore>,
     approval: Inject<ApprovalService>,
     bus: Inject<AppSignalBus>,
@@ -68,7 +85,7 @@ pub async fn stream_chat(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let deps = build_deps(
-        state, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
+        state, extensions, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
     );
     let event_stream = build_chat_stream(deps, req.last_user_message(), conv_id, Some(user_id));
     Sse::new(Box::pin(event_stream))
@@ -79,6 +96,7 @@ pub async fn stream_chat(
 /// SSE streaming chat endpoint (public — no authentication required).
 pub async fn stream_chat_public(
     State(state): State<AppState>,
+    RequestExtensions(extensions): RequestExtensions,
     store: Inject<ActiveAgentStore>,
     approval: Inject<ApprovalService>,
     bus: Inject<AppSignalBus>,
@@ -95,7 +113,7 @@ pub async fn stream_chat_public(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let deps = build_deps(
-        state, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
+        state, extensions, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
     );
     let event_stream = build_chat_stream(deps, req.last_user_message(), conv_id, None);
     Sse::new(Box::pin(event_stream))
@@ -105,6 +123,7 @@ pub async fn stream_chat_public(
 
 fn build_deps(
     state: AppState,
+    extensions: axum::http::Extensions,
     store: Inject<ActiveAgentStore>,
     approval: Inject<ApprovalService>,
     bus: Inject<AppSignalBus>,
@@ -146,6 +165,7 @@ fn build_deps(
         conv_store: Arc::clone(&conv_store.0),
         llm: Arc::clone(&state.llm),
         resolve_ctx,
+        extensions,
     }
 }
 
@@ -287,6 +307,7 @@ fn build_chat_stream(
             .with_conversation_store(Arc::clone(&deps.conv_store) as Arc<dyn ConversationStore>)
             .with_history(accumulated_history.iter().cloned())
             .with_state(ctx_state)
+            .with_extensions(deps.extensions.clone())
             .build();
 
             let mut agent_stream =

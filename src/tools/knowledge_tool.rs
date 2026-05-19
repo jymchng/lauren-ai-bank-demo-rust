@@ -81,11 +81,9 @@ impl Tool for SearchPublicInfoTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use injectable_runtime::{EmptySingletonStore, ResolveContext};
 
     fn make_ctx() -> ToolContext {
-        let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
-        ToolContext::new("test-tool-use-id", resolve_ctx)
+        ToolContext::new("test-tool-use-id")
     }
 
     #[tokio::test]
