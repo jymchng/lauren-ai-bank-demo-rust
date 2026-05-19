@@ -625,8 +625,8 @@ async fn test_get_balance_tool_returns_alice_balance() {
     let tool: Arc<GetBalanceTool> = state.container().resolve_external().await.unwrap();
     let mut tool_ctx = ToolContext::new("tu-alice");
     tool_ctx
-        .state
-        .insert("user_id".to_string(), serde_json::json!("alice"));
+        .extensions
+        .insert(lauren_chatbot::error::UserIdExtension("alice".to_string()));
 
     let result = tool
         .call(serde_json::json!({"user_id": "alice"}), &tool_ctx)
@@ -672,8 +672,10 @@ async fn test_get_balance_tool_for_unknown_user_returns_error() {
     let tool: Arc<GetBalanceTool> = state.container().resolve_external().await.unwrap();
     let mut tool_ctx = ToolContext::new("tu-unknown");
     tool_ctx
-        .state
-        .insert("user_id".to_string(), serde_json::json!("nobody_xyz"));
+        .extensions
+        .insert(lauren_chatbot::error::UserIdExtension(
+            "nobody_xyz".to_string(),
+        ));
 
     let result = tool
         .call(serde_json::json!({"user_id": "nobody_xyz"}), &tool_ctx)
@@ -691,8 +693,8 @@ async fn test_transfer_tool_requires_prior_approval() {
     let tool: Arc<TransferFundsTool> = state.container().resolve_external().await.unwrap();
     let mut tool_ctx = ToolContext::new("tu-transfer");
     tool_ctx
-        .state
-        .insert("user_id".to_string(), serde_json::json!("alice"));
+        .extensions
+        .insert(lauren_chatbot::error::UserIdExtension("alice".to_string()));
 
     let result = tool
         .call(
@@ -722,8 +724,8 @@ async fn test_transfer_tool_succeeds_with_approved_token() {
     let tool: Arc<TransferFundsTool> = state.container().resolve_external().await.unwrap();
     let mut tool_ctx = ToolContext::new("tu-transfer-ok");
     tool_ctx
-        .state
-        .insert("user_id".to_string(), serde_json::json!("alice"));
+        .extensions
+        .insert(lauren_chatbot::error::UserIdExtension("alice".to_string()));
     tool_ctx.state.insert(
         "transfer_approved".to_string(),
         serde_json::json!({"to_user": "bob", "amount": 50.0, "consumed": false}),

@@ -30,9 +30,9 @@ impl Tool for CheckAuthenticationTool {
 
     async fn call(&self, _input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
         let user_id = ctx
-            .state
-            .get("user_id")
-            .and_then(|v| v.as_str())
+            .extensions
+            .get::<crate::error::UserIdExtension>()
+            .map(|e| e.0.as_str())
             .unwrap_or("");
 
         if user_id.is_empty() {
@@ -57,8 +57,8 @@ mod tests {
     fn make_ctx(user_id: Option<&str>) -> ToolContext {
         let mut ctx = ToolContext::new("test-tool-use-id");
         if let Some(uid) = user_id {
-            ctx.state
-                .insert("user_id".into(), serde_json::Value::String(uid.to_string()));
+            ctx.extensions
+                .insert(crate::error::UserIdExtension(uid.to_string()));
         }
         ctx
     }

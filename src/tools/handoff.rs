@@ -175,13 +175,7 @@ impl Tool for HandoffToAuthenticatedCrmTool {
             .extensions
             .get::<crate::error::UserIdExtension>()
             .map(|e| !e.0.is_empty())
-            .unwrap_or_else(|| {
-                !ctx.state
-                    .get("user_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .is_empty()
-            });
+            .unwrap_or(false);
 
         if !is_authenticated {
             return Ok(ToolResult::ok(
@@ -220,7 +214,8 @@ mod tests {
     async fn make_ctx(user_id: &str, conversation_id: &str) -> ToolContext {
         let mut ctx = ToolContext::new("test_tool_call");
         if !user_id.is_empty() {
-            ctx.state.insert("user_id".into(), json!(user_id));
+            ctx.extensions
+                .insert(crate::error::UserIdExtension(user_id.to_string()));
         }
         ctx.state
             .insert("conversation_id".into(), json!(conversation_id));

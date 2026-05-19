@@ -28,14 +28,7 @@ impl AccountSummaryTool {
             .extensions
             .get::<crate::error::UserIdExtension>()
             .map(|e| e.0.clone())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| {
-                ctx.state
-                    .get("user_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string()
-            });
+            .unwrap_or_else(|| "unknown".to_string());
         let user_id = user_id_owned.as_str();
 
         Ok(ToolResult::ok(
@@ -70,8 +63,8 @@ mod tests {
     async fn account_summary_tool_call_with_valid_input() {
         let tool = AccountSummaryTool;
         let mut ctx = ToolContext::new("test-id");
-        ctx.state
-            .insert("user_id".to_string(), serde_json::json!("alice"));
+        ctx.extensions
+            .insert(crate::error::UserIdExtension("alice".to_string()));
 
         let result = tool
             .call(

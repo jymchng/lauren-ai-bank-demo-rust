@@ -26,22 +26,11 @@ impl GetBalanceTool {
         user_id: String,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
-        if let Some(ext) = ctx.extensions.get::<crate::error::UserIdExtension>() {
-            if !ext.0.is_empty() && ext.0 != user_id {
-                return Ok(ToolResult::error(
-                    format!(
-                        "Unauthorized: authenticated as '{}', cannot access '{user_id}'",
-                        ext.0
-                    ),
-                    &ctx.tool_use_id,
-                ));
-            }
-        }
         let auth_uid = ctx
-            .state
-            .get("user_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .extensions
+            .get::<crate::error::UserIdExtension>()
+            .map(|e| e.0.clone())
+            .unwrap_or_default();
         if auth_uid.is_empty() {
             return Ok(ToolResult::error(
                 "User not authenticated",
@@ -50,11 +39,11 @@ impl GetBalanceTool {
         }
         if user_id != auth_uid {
             return Ok(ToolResult::error(
-                format!("Access denied: authenticated as '{auth_uid}', not '{user_id}'"),
+                format!("Unauthorized: authenticated as '{auth_uid}', cannot access '{user_id}'"),
                 &ctx.tool_use_id,
             ));
         }
-        match self.db.get_balance(auth_uid).await {
+        match self.db.get_balance(&auth_uid).await {
             Some(balance) => Ok(ToolResult::ok(
                 format!("Balance: ${:.2}", balance),
                 &ctx.tool_use_id,
@@ -89,22 +78,11 @@ impl TransferFundsTool {
         #[agtrs(tool_param(description = "The amount to transfer in USD"))] amount: f64,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
-        if let Some(ext) = ctx.extensions.get::<crate::error::UserIdExtension>() {
-            if !ext.0.is_empty() && ext.0 != user_id {
-                return Ok(ToolResult::error(
-                    format!(
-                        "Unauthorized: authenticated as '{}', cannot access '{user_id}'",
-                        ext.0
-                    ),
-                    &ctx.tool_use_id,
-                ));
-            }
-        }
         let auth_uid = ctx
-            .state
-            .get("user_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .extensions
+            .get::<crate::error::UserIdExtension>()
+            .map(|e| e.0.clone())
+            .unwrap_or_default();
         if auth_uid.is_empty() {
             return Ok(ToolResult::error(
                 "User not authenticated",
@@ -113,7 +91,7 @@ impl TransferFundsTool {
         }
         if user_id != auth_uid {
             return Ok(ToolResult::error(
-                format!("Access denied: authenticated as '{auth_uid}', not '{user_id}'"),
+                format!("Unauthorized: authenticated as '{auth_uid}', cannot access '{user_id}'"),
                 &ctx.tool_use_id,
             ));
         }
@@ -155,12 +133,12 @@ impl TransferFundsTool {
             ));
         }
 
-        match self.db.transfer(auth_uid, &to_user, amount).await {
+        match self.db.transfer(&auth_uid, &to_user, amount).await {
             Ok(tx) => {
-                let from_balance = self.db.get_balance(auth_uid).await.unwrap_or(0.0);
+                let from_balance = self.db.get_balance(&auth_uid).await.unwrap_or(0.0);
                 let to_balance = self.db.get_balance(&to_user).await.unwrap_or(0.0);
                 self.signal_bus.emit(AppSignal::BalanceChanged {
-                    from_user: auth_uid.to_string(),
+                    from_user: auth_uid.clone(),
                     to_user: to_user.clone(),
                     amount,
                     from_balance,
@@ -198,22 +176,11 @@ impl GetTransactionHistoryTool {
         user_id: String,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
-        if let Some(ext) = ctx.extensions.get::<crate::error::UserIdExtension>() {
-            if !ext.0.is_empty() && ext.0 != user_id {
-                return Ok(ToolResult::error(
-                    format!(
-                        "Unauthorized: authenticated as '{}', cannot access '{user_id}'",
-                        ext.0
-                    ),
-                    &ctx.tool_use_id,
-                ));
-            }
-        }
         let auth_uid = ctx
-            .state
-            .get("user_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .extensions
+            .get::<crate::error::UserIdExtension>()
+            .map(|e| e.0.clone())
+            .unwrap_or_default();
         if auth_uid.is_empty() {
             return Ok(ToolResult::error(
                 "User not authenticated",
@@ -222,12 +189,12 @@ impl GetTransactionHistoryTool {
         }
         if user_id != auth_uid {
             return Ok(ToolResult::error(
-                format!("Access denied: authenticated as '{auth_uid}', not '{user_id}'"),
+                format!("Unauthorized: authenticated as '{auth_uid}', cannot access '{user_id}'"),
                 &ctx.tool_use_id,
             ));
         }
 
-        let transactions = self.db.get_transactions(auth_uid).await;
+        let transactions = self.db.get_transactions(&auth_uid).await;
         if transactions.is_empty() {
             return Ok(ToolResult::ok("No transactions found.", &ctx.tool_use_id));
         }
@@ -269,7 +236,8 @@ mod tests {
     fn make_ctx(user_id: &str) -> ToolContext {
         let mut ctx = ToolContext::new("test_tool_call");
         if !user_id.is_empty() {
-            ctx.state.insert("user_id".into(), json!(user_id));
+            ctx.extensions
+                .insert(crate::error::UserIdExtension(user_id.to_string()));
         }
         ctx.state
             .insert("conversation_id".into(), json!("test-conv"));
@@ -318,7 +286,7 @@ mod tests {
         let ctx = make_ctx("alice");
         let result = tool.call(json!({"user_id": "bob"}), &ctx).await.unwrap();
         assert!(result.is_error);
-        assert!(result.content.contains("Access denied"));
+        assert!(result.content.contains("Unauthorized"));
         assert!(result.content.contains("alice"));
     }
 
@@ -404,7 +372,7 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_error);
-        assert!(result.content.contains("Access denied"));
+        assert!(result.content.contains("Unauthorized"));
     }
 
     // ── GetTransactionHistoryTool ───────────────────────────────────────────
@@ -433,7 +401,7 @@ mod tests {
         let ctx = make_ctx("alice");
         let result = tool.call(json!({"user_id": "bob"}), &ctx).await.unwrap();
         assert!(result.is_error);
-        assert!(result.content.contains("Access denied"));
+        assert!(result.content.contains("Unauthorized"));
     }
 
     // ── Schema / metadata ──────────────────────────────────────────────────
