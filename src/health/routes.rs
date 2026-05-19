@@ -7,7 +7,7 @@ pub async fn health() -> Json<Value> {
 }
 
 /// Create the health router.
-pub fn health_router() -> axum::Router<std::sync::Arc<crate::AppState>> {
+pub fn health_router() -> axum::Router<crate::AppState> {
     axum::Router::new().route("/api/health", axum::routing::get(health))
 }
 

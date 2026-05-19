@@ -18,113 +18,85 @@ pub mod ws;
 use std::sync::Arc;
 
 use agtrs::prelude::*;
+use agtrs_runtime::cost::{CostTracker, PricingTable};
 use agtrs_runtime::memory::InMemoryConversationStore;
+use injectable::axum::{AxumState, InjectableState};
 use injectable::prelude::*;
-
-use agents::active_agent_store::ActiveAgentStore;
-use agents::auth_crm::AuthenticatedCrmAgent;
-use agents::disputes::DisputesAgent;
-use agents::transfer::BankTransferAgent;
-use agents::unauth_crm::UnauthenticatedCrmAgent;
-use approval::service::ApprovalService;
-use banking::db::BankDatabase;
-use config::AppConfig;
-use crypto::service::CryptoService;
-use signals::bus::AppSignalBus;
+use injectable_runtime::ResolveContext;
 use tower_http::trace::TraceLayer;
-use ws::event_forwarder::EventForwarder;
-use ws::token_service::WsTokenService;
 
 // Bind the concrete LlmProvider implementation (compile-time inventory entry).
 // Must be in the same compilation unit as the #[injectable] types it references.
 use llm::OpenRouterProvider;
 
-/// Shared application state accessible to all handlers.
+/// Minimal application state — only holds things that cannot be resolved via
+/// `Inject<T>` (non-`#[injectable]` trait objects and the DI container itself).
+///
+/// Every `#[injectable]` service (BankDatabase, ApprovalService, agents, …)
+/// is extracted directly in handlers via `Inject<T>`.  `CostTracker` and
+/// `InMemoryConversationStore` are registered as `DynProvider<Arc<T>>`
+/// singletons so they too are available via `Inject<T>`.
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Arc<AppConfig>,
-    pub bank_db: Arc<BankDatabase>,
-    pub crypto_service: Arc<CryptoService>,
-    pub active_agent_store: Arc<ActiveAgentStore>,
-    pub approval_service: Arc<ApprovalService>,
-    pub signal_bus: Arc<AppSignalBus>,
-    pub cost_tracker: Arc<CostTracker>,
-    pub event_forwarder: Arc<EventForwarder>,
-    pub ws_token_service: Arc<WsTokenService>,
-    /// Pre-resolved agents — singletons from the DI container.
-    pub unauth_agent: Arc<UnauthenticatedCrmAgent>,
-    pub auth_agent: Arc<AuthenticatedCrmAgent>,
-    pub transfer_agent: Arc<BankTransferAgent>,
-    pub disputes_agent: Arc<DisputesAgent>,
-    /// Shared ResolveContext — passed to AgentContext so tools can resolve services.
-    pub resolve_ctx: Arc<injectable_runtime::ResolveContext>,
-    /// The LLM provider — passed to AgentContext for streaming calls.
+    /// Wraps `Arc<Container>` — the source of all DI resolutions.
+    container: AxumState,
+    /// LLM provider — `Arc<dyn LlmProvider>` is not Sized, so `Inject<dyn LlmProvider>`
+    /// cannot be used as a handler extractor; stored here instead.
     pub llm: Arc<dyn LlmProvider>,
-    /// Shared conversation store — persists history across HTTP requests.
-    pub conv_store: Arc<InMemoryConversationStore>,
+}
+
+impl InjectableState for AppState {
+    fn resolve_context(&self) -> &ResolveContext {
+        self.container.resolve_context()
+    }
 }
 
 impl AppState {
-    /// Get an agent arc by logical name.
-    pub fn get_agent_by_name(&self, name: &str) -> Option<Arc<dyn Agent>> {
-        match name {
-            "Banking CRM Agent (Public)" => Some(Arc::clone(&self.unauth_agent) as Arc<dyn Agent>),
-            "Banking CRM Agent (Authenticated)" => {
-                Some(Arc::clone(&self.auth_agent) as Arc<dyn Agent>)
-            }
-            "Banking Transfer Agent" => Some(Arc::clone(&self.transfer_agent) as Arc<dyn Agent>),
-            "Banking Disputes Agent" => Some(Arc::clone(&self.disputes_agent) as Arc<dyn Agent>),
-            _ => None,
-        }
+    /// Borrow the inner `Container` for direct resolution in tests or startup code.
+    pub fn container(&self) -> &injectable::Container {
+        self.container.container()
+    }
+
+    /// Return a clone with a different LLM provider (used in tests to inject a mock).
+    pub fn with_llm(self, llm: Arc<dyn LlmProvider>) -> Self {
+        Self { llm, ..self }
     }
 }
 
 /// Build the application state using the injectable container.
-pub async fn build_app_state() -> Arc<AppState> {
+pub async fn build_app_state() -> AppState {
+    // Pre-build singletons that aren't `#[injectable]` and register them as
+    // `DynProvider<Arc<T>>` so `Inject<T>` can extract them in handlers.
+    let conv_store = Arc::new(InMemoryConversationStore::new());
+    let cost_tracker = Arc::new(CostTracker::new(Arc::new(PricingTable::default_pricing())));
+
+    let conv_store_dyn = Arc::clone(&conv_store);
+    let cost_tracker_dyn = Arc::clone(&cost_tracker);
+
     let container = Container::builder()
+        .register(DynProvider::<Arc<InMemoryConversationStore>>::sync(
+            move || Ok(Arc::clone(&conv_store_dyn)),
+        ))
+        .register(DynProvider::<Arc<CostTracker>>::sync(move || {
+            Ok(Arc::clone(&cost_tracker_dyn))
+        }))
         .build()
         .await
         .expect("DI container failed to build — check injectable bindings");
 
-    let resolve_ctx = Arc::new(container.context().clone());
-
-    macro_rules! get {
-        ($T:ty) => {
-            container
-                .resolve_external::<Arc<$T>>()
-                .await
-                .unwrap_or_else(|e| panic!("Failed to resolve {}: {e}", stringify!($T)))
-        };
-    }
-
     let llm = container
         .resolve_external::<Arc<dyn LlmProvider>>()
         .await
-        .unwrap_or_else(|e| panic!("Failed to resolve LlmProvider: {e}"));
+        .expect("Failed to resolve LlmProvider");
 
-    Arc::new(AppState {
-        config: get!(AppConfig),
-        bank_db: get!(BankDatabase),
-        crypto_service: get!(CryptoService),
-        active_agent_store: get!(ActiveAgentStore),
-        approval_service: get!(ApprovalService),
-        signal_bus: get!(AppSignalBus),
-        event_forwarder: get!(EventForwarder),
-        ws_token_service: get!(WsTokenService),
-        cost_tracker: Arc::new(CostTracker::new(Arc::new(PricingTable::default_pricing()))),
-        unauth_agent: get!(UnauthenticatedCrmAgent),
-        auth_agent: get!(AuthenticatedCrmAgent),
-        transfer_agent: get!(BankTransferAgent),
-        disputes_agent: get!(DisputesAgent),
-        resolve_ctx,
+    AppState {
+        container: AxumState::new(container),
         llm,
-        conv_store: Arc::new(InMemoryConversationStore::new()),
-    })
+    }
 }
 
 /// Build state for tests — uses a real container but with test config defaults.
-pub async fn build_test_state() -> Arc<AppState> {
-    // Override env vars for test config before building container
+pub async fn build_test_state() -> AppState {
     std::env::set_var("OPENROUTER_API_KEY", "test-key");
     std::env::set_var("LLM_MODEL", "test-model");
     std::env::set_var("LLM_BASE_URL", "http://localhost:11434/v1");
@@ -134,7 +106,7 @@ pub async fn build_test_state() -> Arc<AppState> {
 }
 
 /// Create the complete Axum router with all routes and middleware.
-pub fn create_router(state: Arc<AppState>) -> axum::Router {
+pub fn create_router(state: AppState) -> axum::Router {
     let app = axum::Router::new()
         .merge(health::routes::health_router())
         .merge(banking::routes::banking_router())
@@ -155,12 +127,10 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
 pub mod test_utils {
     use super::*;
 
-    /// Create a test application state via the injectable container.
-    pub async fn create_test_state() -> Arc<AppState> {
+    pub async fn create_test_state() -> AppState {
         build_test_state().await
     }
 
-    /// Create a test Axum application.
     pub async fn create_test_app() -> axum::Router {
         let state = create_test_state().await;
         create_router(state)
@@ -170,17 +140,25 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::AppConfig;
 
     #[tokio::test]
     async fn test_build_app_state() {
         let state = test_utils::create_test_state().await;
-        assert_eq!(state.config.port, 8000);
+        let config: Arc<AppConfig> = state
+            .container()
+            .resolve_external()
+            .await
+            .expect("AppConfig");
+        assert_eq!(config.port, 8000);
     }
 
     #[tokio::test]
     async fn test_app_state_clone() {
         let state = test_utils::create_test_state().await;
         let cloned = state.clone();
-        assert_eq!(cloned.config.port, state.config.port);
+        let p1: Arc<AppConfig> = state.container().resolve_external().await.unwrap();
+        let p2: Arc<AppConfig> = cloned.container().resolve_external().await.unwrap();
+        assert_eq!(p1.port, p2.port);
     }
 }

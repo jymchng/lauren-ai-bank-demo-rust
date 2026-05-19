@@ -6,22 +6,52 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use agtrs::prelude::*;
+use agtrs_runtime::memory::InMemoryConversationStore;
 use agtrs_runtime::signals as agtrs_sig;
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::Json;
 use futures::StreamExt;
+use injectable::axum::InjectableState;
+use injectable::prelude::*;
 use serde_json::json;
 
+use crate::agents::active_agent_store::ActiveAgentStore;
+use crate::agents::auth_crm::AuthenticatedCrmAgent;
+use crate::agents::disputes::DisputesAgent;
+use crate::agents::transfer::BankTransferAgent;
+use crate::agents::unauth_crm::UnauthenticatedCrmAgent;
+use crate::approval::service::ApprovalService;
 use crate::chat::schemas::ChatRequest;
 use crate::chat::sse::stream_event_to_sse;
 use crate::signals::bus::AppSignal;
+use crate::signals::bus::AppSignalBus;
 use crate::AppState;
+
+/// All dependencies needed by the chat stream loop — built once in the handler
+/// and moved into the spawned task.
+struct ChatDeps {
+    agents: HashMap<String, Arc<dyn Agent>>,
+    active_agent_store: Arc<ActiveAgentStore>,
+    approval_service: Arc<ApprovalService>,
+    signal_bus: Arc<AppSignalBus>,
+    conv_store: Arc<InMemoryConversationStore>,
+    llm: Arc<dyn LlmProvider>,
+    resolve_ctx: Arc<injectable_runtime::ResolveContext>,
+}
 
 /// SSE streaming chat endpoint (authenticated — user_id required in body).
 pub async fn stream_chat(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
+    store: Inject<ActiveAgentStore>,
+    approval: Inject<ApprovalService>,
+    bus: Inject<AppSignalBus>,
+    conv_store: Inject<InMemoryConversationStore>,
+    unauth: Inject<UnauthenticatedCrmAgent>,
+    auth: Inject<AuthenticatedCrmAgent>,
+    transfer: Inject<BankTransferAgent>,
+    disputes: Inject<DisputesAgent>,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
     let Some(user_id) = req.user_id.clone() else {
@@ -37,7 +67,10 @@ pub async fn stream_chat(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let event_stream = build_chat_stream(state, req.last_user_message(), conv_id, Some(user_id));
+    let deps = build_deps(
+        state, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
+    );
+    let event_stream = build_chat_stream(deps, req.last_user_message(), conv_id, Some(user_id));
     Sse::new(Box::pin(event_stream))
         .keep_alive(KeepAlive::default())
         .into_response()
@@ -45,7 +78,15 @@ pub async fn stream_chat(
 
 /// SSE streaming chat endpoint (public — no authentication required).
 pub async fn stream_chat_public(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
+    store: Inject<ActiveAgentStore>,
+    approval: Inject<ApprovalService>,
+    bus: Inject<AppSignalBus>,
+    conv_store: Inject<InMemoryConversationStore>,
+    unauth: Inject<UnauthenticatedCrmAgent>,
+    auth: Inject<AuthenticatedCrmAgent>,
+    transfer: Inject<BankTransferAgent>,
+    disputes: Inject<DisputesAgent>,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
     let conv_id = req
@@ -53,27 +94,76 @@ pub async fn stream_chat_public(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let event_stream = build_chat_stream(state, req.last_user_message(), conv_id, None);
+    let deps = build_deps(
+        state, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
+    );
+    let event_stream = build_chat_stream(deps, req.last_user_message(), conv_id, None);
     Sse::new(Box::pin(event_stream))
         .keep_alive(KeepAlive::default())
         .into_response()
 }
 
+fn build_deps(
+    state: AppState,
+    store: Inject<ActiveAgentStore>,
+    approval: Inject<ApprovalService>,
+    bus: Inject<AppSignalBus>,
+    conv_store: Inject<InMemoryConversationStore>,
+    unauth: Inject<UnauthenticatedCrmAgent>,
+    auth: Inject<AuthenticatedCrmAgent>,
+    transfer: Inject<BankTransferAgent>,
+    disputes: Inject<DisputesAgent>,
+) -> ChatDeps {
+    let agents: HashMap<String, Arc<dyn Agent>> = [
+        (
+            "Banking CRM Agent (Public)",
+            Arc::clone(&unauth.0) as Arc<dyn Agent>,
+        ),
+        (
+            "Banking CRM Agent (Authenticated)",
+            Arc::clone(&auth.0) as Arc<dyn Agent>,
+        ),
+        (
+            "Banking Transfer Agent",
+            Arc::clone(&transfer.0) as Arc<dyn Agent>,
+        ),
+        (
+            "Banking Disputes Agent",
+            Arc::clone(&disputes.0) as Arc<dyn Agent>,
+        ),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+
+    let resolve_ctx = Arc::new(state.resolve_context().clone());
+
+    ChatDeps {
+        agents,
+        active_agent_store: Arc::clone(&store.0),
+        approval_service: Arc::clone(&approval.0),
+        signal_bus: Arc::clone(&bus.0),
+        conv_store: Arc::clone(&conv_store.0),
+        llm: Arc::clone(&state.llm),
+        resolve_ctx,
+    }
+}
+
 /// Build a multi-agent streaming response with handoff support.
 fn build_chat_stream(
-    state: Arc<AppState>,
+    deps: ChatDeps,
     message: String,
     conversation_id: String,
     user_id: Option<String>,
 ) -> impl futures::Stream<Item = Result<Event, Infallible>> + Send + 'static {
     let (tx, rx) = futures::channel::mpsc::unbounded::<Result<Event, Infallible>>();
-    let approval_svc = Arc::clone(&state.approval_service);
+    let approval_svc = Arc::clone(&deps.approval_service);
     let conv_id_cleanup = conversation_id.clone();
 
     tokio::spawn(async move {
         let max_handoffs: usize = if user_id.is_some() { 8 } else { 4 };
 
-        let mut current_agent_name = state
+        let mut current_agent_name = deps
             .active_agent_store
             .get_active_agent(&conversation_id)
             .await
@@ -90,7 +180,7 @@ fn build_chat_stream(
         let per_request_signals = Arc::new(agtrs_runtime::signals::SignalBus::new());
         {
             let conv_id = conversation_id.clone();
-            let ws_tx = state.signal_bus.sender();
+            let ws_tx = deps.signal_bus.sender();
             per_request_signals
                 .on::<agtrs_sig::ToolCallStarted>(move |e| {
                     let _ = ws_tx.send(AppSignal::ToolCallStarted {
@@ -102,7 +192,7 @@ fn build_chat_stream(
                 .await;
 
             let conv_id = conversation_id.clone();
-            let ws_tx = state.signal_bus.sender();
+            let ws_tx = deps.signal_bus.sender();
             per_request_signals
                 .on::<agtrs_sig::ToolCallComplete>(move |e| {
                     let _ = ws_tx.send(AppSignal::ToolCallComplete {
@@ -117,7 +207,7 @@ fn build_chat_stream(
                 .await;
 
             let conv_id = conversation_id.clone();
-            let ws_tx = state.signal_bus.sender();
+            let ws_tx = deps.signal_bus.sender();
             per_request_signals
                 .on::<agtrs_sig::ModelCallComplete>(move |e| {
                     let _ = ws_tx.send(AppSignal::ModelCallComplete {
@@ -132,7 +222,7 @@ fn build_chat_stream(
                 .await;
 
             let conv_id = conversation_id.clone();
-            let ws_tx = state.signal_bus.sender();
+            let ws_tx = deps.signal_bus.sender();
             per_request_signals
                 .on::<agtrs_sig::AgentRunComplete>(move |e| {
                     let _ = ws_tx.send(AppSignal::AgentRunComplete {
@@ -145,8 +235,7 @@ fn build_chat_stream(
                 .await;
         }
 
-        // Load conversation history from the shared store.
-        let mut accumulated_history: Vec<Message> = state
+        let mut accumulated_history: Vec<Message> = deps
             .conv_store
             .load(&conversation_id)
             .await
@@ -154,22 +243,18 @@ fn build_chat_stream(
 
         let current_message = message;
         let mut is_first_turn = true;
-        // Carry the handoff summary across loop iterations so it can be emitted in
-        // AgentHandoff (detected at end of current iter) AND fed as input to the next agent.
         let mut pending_input_summary: Option<String> = None;
 
         'handoff: for _ in 0..max_handoffs {
-            let agent = match state.get_agent_by_name(&current_agent_name) {
-                Some(a) => a,
+            let agent = match deps.agents.get(&current_agent_name) {
+                Some(a) => Arc::clone(a),
                 None => break,
             };
 
-            // Emit agent_started so the client always knows who is speaking.
             let _ = tx.unbounded_send(Ok(Event::default()
                 .event("agent_started")
                 .data(current_agent_name.clone())));
 
-            // First turn: original user message; subsequent turns: handoff summary.
             let input_text = if is_first_turn {
                 is_first_turn = false;
                 current_message.clone()
@@ -192,20 +277,18 @@ fn build_chat_stream(
                 );
             }
 
-            // Build AgentContext via builder — injects shared signal bus and conv store.
             let ctx = AgentContext::builder(
                 &current_agent_name,
                 agent.config().clone(),
-                Arc::clone(&state.llm),
-                Arc::clone(&state.resolve_ctx),
+                Arc::clone(&deps.llm),
+                Arc::clone(&deps.resolve_ctx),
             )
             .with_signals(Arc::clone(&per_request_signals))
-            .with_conversation_store(Arc::clone(&state.conv_store) as Arc<dyn ConversationStore>)
+            .with_conversation_store(Arc::clone(&deps.conv_store) as Arc<dyn ConversationStore>)
             .with_history(accumulated_history.iter().cloned())
             .with_state(ctx_state)
             .build();
 
-            // Stream this agent's turn (executor auto-registers agent.tools()).
             let mut agent_stream =
                 AgentExecutor::run_stream(Arc::clone(&agent), Message::user(input_text), ctx);
 
@@ -224,14 +307,13 @@ fn build_chat_stream(
                 break;
             }
 
-            // Check for agent handoff.
-            let new_agent = state
+            let new_agent = deps
                 .active_agent_store
                 .get_active_agent(&conversation_id)
                 .await;
             match new_agent {
                 Some(name) if name != current_agent_name => {
-                    let handoff_summary = state
+                    let handoff_summary = deps
                         .active_agent_store
                         .get_and_clear_summary(&conversation_id)
                         .await
@@ -239,14 +321,12 @@ fn build_chat_stream(
                     if !handoff_summary.is_empty() {
                         pending_input_summary = Some(handoff_summary.clone());
                     }
-                    // Emit agent_handoff WS event so the frontend can update "Talking to:".
-                    state.signal_bus.emit(AppSignal::AgentHandoff {
+                    deps.signal_bus.emit(AppSignal::AgentHandoff {
                         from_agent: current_agent_name.clone(),
                         to_agent: name.clone(),
                         summary: handoff_summary,
                         conversation_id: conversation_id.clone(),
                     });
-                    // Python `break` event: data is the target agent name.
                     let _ =
                         tx.unbounded_send(Ok(Event::default().event("break").data(name.clone())));
                     current_agent_name = name;
@@ -255,24 +335,20 @@ fn build_chat_stream(
             }
         }
 
-        // Persist conversation history.
-        let _ = state
+        let _ = deps
             .conv_store
             .save(&conversation_id, &accumulated_history)
             .await;
 
-        // Emit final done — once for the entire multi-agent run (not per-agent turn).
         let _ = tx.unbounded_send(Ok(Event::default().event("done").data("")));
 
-        // Cleanup: cancel any pending approvals when the stream ends / client disconnects.
         approval_svc.cancel_approval(&conv_id_cleanup).await;
     });
 
     rx
 }
 
-/// Create the chat router.
-pub fn chat_router() -> axum::Router<Arc<AppState>> {
+pub fn chat_router() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/api/banking/chat", axum::routing::post(stream_chat))
         .route(
@@ -370,15 +446,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_stream_chat_public_direct() {
-        let state = crate::test_utils::create_test_state().await;
-        let req = make_req("Hello");
-        let result = stream_chat_public(axum::extract::State(state), axum::Json(req)).await;
-        let response = result.into_response();
         assert_eq!(response.status(), StatusCode::OK);
     }
 }

@@ -1,42 +1,32 @@
-use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::Arc;
+
+use injectable::prelude::*;
 
 use crate::approval::service::ApprovalService;
 use crate::error::AppError;
 use crate::AppState;
 
-/// Request body for the approval endpoint.
-/// Accepts `approval_id` (Python-compatible) or `conversation_id` as the key.
 #[derive(Debug, Deserialize)]
 pub struct ApprovalRequest {
-    /// Python frontend sends this as `approval_id` (== conversation_id in Rust).
     #[serde(alias = "conversation_id")]
     pub approval_id: String,
     pub approved: bool,
-    /// Ignored — user_id is verified by the approval service's stored record.
     pub user_id: Option<String>,
 }
 
-/// Handle an approval response from the browser.
 pub async fn respond(
-    State(state): State<Arc<AppState>>,
+    approval: Inject<ApprovalService>,
     Json(body): Json<ApprovalRequest>,
 ) -> Result<Json<Value>, AppError> {
-    match state
-        .approval_service
-        .respond(&body.approval_id, body.approved)
-        .await
-    {
+    match approval.respond(&body.approval_id, body.approved).await {
         Ok(()) => Ok(Json(json!({"status": "ok"}))),
         Err(e) => Err(AppError::BadRequest(e)),
     }
 }
 
-/// Create the approval router.
-pub fn approval_router() -> axum::Router<Arc<AppState>> {
+pub fn approval_router() -> axum::Router<AppState> {
     axum::Router::new().route("/api/banking/approval", axum::routing::post(respond))
 }
 

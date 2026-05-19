@@ -1,9 +1,10 @@
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use std::sync::Arc;
+
+use injectable::prelude::*;
 
 use crate::crypto::service::CryptoService;
 use crate::error::UserIdExtension;
@@ -11,11 +12,10 @@ use crate::AppState;
 
 /// Middleware that verifies the X-Signature HMAC header and extracts user_id.
 pub async fn signature_guard(
-    State(state): State<Arc<AppState>>,
+    crypto: Inject<CryptoService>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Clone the header before consuming the body
     let signature = request
         .headers()
         .get("X-Signature")
@@ -28,11 +28,10 @@ pub async fn signature_guard(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    if !state.crypto_service.verify(&bytes, &signature) {
+    if !crypto.verify(&bytes, &signature) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // Parse user_id from verified body
     let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
     let user_id = parsed
         .get("user_id")
@@ -40,7 +39,6 @@ pub async fn signature_guard(
         .unwrap_or("")
         .to_string();
 
-    // Reconstruct request with body and user_id extension
     let mut new_request = Request::from_parts(parts, Body::from(bytes));
     new_request
         .extensions_mut()
@@ -52,9 +50,11 @@ pub async fn signature_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::service::CryptoService;
     use crate::test_utils::create_test_state;
     use axum::http::{Request, StatusCode};
     use axum::Router;
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     async fn protected_handler(request: Request<Body>) -> &'static str {
@@ -72,7 +72,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_signature_guard_missing_header() {
-        let state = crate::test_utils::create_test_state().await;
+        let state = create_test_state().await;
         let app = Router::new()
             .route("/test", axum::routing::post(protected_handler))
             .layer(axum::middleware::from_fn_with_state(
@@ -92,13 +92,12 @@ mod tests {
             )
             .await
             .unwrap();
-
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn test_signature_guard_invalid_signature() {
-        let state = crate::test_utils::create_test_state().await;
+        let state = create_test_state().await;
         let body = r#"{"user_id":"alice"}"#;
         let app = Router::new()
             .route("/test", axum::routing::post(protected_handler))
@@ -120,15 +119,15 @@ mod tests {
             )
             .await
             .unwrap();
-
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn test_signature_guard_valid_signature() {
-        let state = crate::test_utils::create_test_state().await;
+        let state = create_test_state().await;
         let body = r#"{"user_id":"alice"}"#;
-        let signature = state.crypto_service.sign(body.as_bytes());
+        let crypto: Arc<CryptoService> = state.container().resolve_external().await.unwrap();
+        let signature = crypto.sign(body.as_bytes());
 
         let app = Router::new()
             .route("/test", axum::routing::post(protected_handler))
@@ -150,7 +149,6 @@ mod tests {
             )
             .await
             .unwrap();
-
         assert_eq!(response.status(), StatusCode::OK);
     }
 }

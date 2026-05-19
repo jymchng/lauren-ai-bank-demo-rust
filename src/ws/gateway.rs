@@ -1,42 +1,42 @@
-use axum::extract::{Query, State, WebSocketUpgrade};
+use axum::extract::{Query, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use serde::Deserialize;
-use std::sync::Arc;
 
+use injectable::prelude::*;
+
+use crate::ws::event_forwarder::EventForwarder;
+use crate::ws::token_service::WsTokenService;
 use crate::AppState;
 
-/// Query parameters for WebSocket connections.
 #[derive(Debug, Deserialize)]
 pub struct WsParams {
     pub token: Option<String>,
 }
 
-/// WebSocket handler endpoint.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<WsParams>,
-    State(state): State<Arc<AppState>>,
+    token_svc: Inject<WsTokenService>,
+    forwarder: Inject<EventForwarder>,
 ) -> impl IntoResponse {
     let token = params.token.unwrap_or_default();
-    let user_id = state.ws_token_service.verify_token(&token);
+    let user_id = token_svc.verify_token(&token);
 
     match user_id {
         Some(uid) => ws
-            .on_upgrade(move |socket| handle_ws(socket, uid, state))
+            .on_upgrade(move |socket| handle_ws(socket, uid, forwarder))
             .into_response(),
         None => axum::http::StatusCode::UNAUTHORIZED.into_response(),
     }
 }
 
-/// Handle an individual WebSocket connection.
 async fn handle_ws(
     mut socket: axum::extract::ws::WebSocket,
-    user_id: String,
-    state: Arc<AppState>,
+    _user_id: String,
+    forwarder: Inject<EventForwarder>,
 ) {
-    let mut rx = state.event_forwarder.subscribe();
+    let mut rx = forwarder.subscribe();
 
-    // Forward signal bus events to WebSocket
     loop {
         tokio::select! {
             result = rx.recv() => {
@@ -54,9 +54,7 @@ async fn handle_ws(
                             break;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        continue;
-                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(_) => break,
                 }
             }
@@ -71,9 +69,8 @@ async fn handle_ws(
     }
 }
 
-/// Issue a WebSocket token for authenticated users.
 pub async fn issue_token(
-    State(state): State<Arc<AppState>>,
+    token_svc: Inject<WsTokenService>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let user_id = body.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -84,18 +81,16 @@ pub async fn issue_token(
         )
             .into_response();
     }
-    let token = state.ws_token_service.create_token(user_id, 120);
+    let token = token_svc.create_token(user_id, 120);
     axum::Json(serde_json::json!({"token": token})).into_response()
 }
 
-/// Issue a public WebSocket token.
-pub async fn issue_public_token(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let token = state.ws_token_service.create_token("__public__", 120);
+pub async fn issue_public_token(token_svc: Inject<WsTokenService>) -> impl IntoResponse {
+    let token = token_svc.create_token("__public__", 120);
     axum::Json(serde_json::json!({"token": token})).into_response()
 }
 
-/// Create the WebSocket router.
-pub fn ws_router() -> axum::Router<Arc<AppState>> {
+pub fn ws_router() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/ws/banking", axum::routing::get(ws_handler))
         .route("/api/banking/ws-token", axum::routing::post(issue_token))
@@ -177,7 +172,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // Without a valid token, should return unauthorized
         assert!(
             response.status() == StatusCode::UNAUTHORIZED
                 || response.status() == StatusCode::BAD_REQUEST
@@ -185,39 +179,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_issue_token_direct() {
-        let state = crate::test_utils::create_test_state().await;
-        let body = serde_json::json!({"user_id": "alice"});
-        let result = issue_token(axum::extract::State(state), axum::Json(body)).await;
-        let response = result.into_response();
+    async fn test_create_ws_token_public_returns_token() {
+        let app = create_test_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/banking/ws-token/public")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_issue_token_direct_empty_user_id() {
-        let state = crate::test_utils::create_test_state().await;
-        let body = serde_json::json!({"user_id": ""});
-        let result = issue_token(axum::extract::State(state), axum::Json(body)).await;
-        let response = result.into_response();
-        // Empty user_id should be treated as bad request
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn test_issue_public_token_direct() {
-        let state = crate::test_utils::create_test_state().await;
-        let result = issue_public_token(axum::extract::State(state)).await;
-        let response = result.into_response();
-        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let data: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(data.get("token").is_some());
     }
 
     #[tokio::test]
     async fn test_ws_handler_with_valid_token() {
         let state = crate::test_utils::create_test_state().await;
-        let token = state.ws_token_service.create_token("alice", 120);
-        let app = create_test_app().await;
-
-        // WebSocket upgrade requires specific headers - just test that we don't crash
+        let token_svc: std::sync::Arc<WsTokenService> =
+            state.container().resolve_external().await.unwrap();
+        let token = token_svc.create_token("alice", 120);
+        let app = crate::create_router(state);
         let response = app
             .oneshot(
                 Request::builder()
@@ -231,7 +219,6 @@ mod tests {
             )
             .await
             .unwrap();
-        // WebSocket upgrade response varies - just ensure we got some response
         let status = response.status();
         assert!(
             status == StatusCode::SWITCHING_PROTOCOLS

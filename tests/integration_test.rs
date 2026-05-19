@@ -23,11 +23,7 @@ async fn create_mock_llm_app() -> (Router, Arc<MockTransport>) {
     let transport = Arc::new(MockTransport::new());
     let mock_llm = Arc::new(MockLlmProvider::new(Arc::clone(&transport)));
 
-    let base = (*build_test_state().await).clone();
-    let state = Arc::new(AppState {
-        llm: mock_llm,
-        ..base
-    });
+    let state = build_test_state().await.with_llm(mock_llm);
 
     (create_router(state), transport)
 }
@@ -548,11 +544,13 @@ async fn test_approval_no_pending_returns_400() {
 
 #[tokio::test]
 async fn test_approval_workflow_approved() {
+    use lauren_chatbot::approval::service::ApprovalService;
     let state = build_test_state().await;
+    let approval_service: Arc<ApprovalService> =
+        state.container().resolve_external().await.unwrap();
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    state
-        .approval_service
+    approval_service
         .create_pending_approval(
             "conv-approved",
             "alice",
@@ -562,7 +560,7 @@ async fn test_approval_workflow_approved() {
         )
         .await;
 
-    assert!(state.approval_service.has_pending("conv-approved").await);
+    assert!(approval_service.has_pending("conv-approved").await);
 
     let app = create_router(state);
     let resp = app
@@ -583,11 +581,13 @@ async fn test_approval_workflow_approved() {
 
 #[tokio::test]
 async fn test_approval_workflow_rejected() {
+    use lauren_chatbot::approval::service::ApprovalService;
     let state = build_test_state().await;
+    let approval_service: Arc<ApprovalService> =
+        state.container().resolve_external().await.unwrap();
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    state
-        .approval_service
+    approval_service
         .create_pending_approval(
             "conv-rejected",
             "alice",
@@ -622,12 +622,9 @@ async fn test_get_balance_tool_returns_alice_balance() {
     use lauren_chatbot::tools::banking_tools::GetBalanceTool;
 
     let state = build_test_state().await;
-    let tool = state
-        .resolve_ctx
-        .resolve_external::<Arc<GetBalanceTool>>()
-        .await
-        .unwrap();
-    let mut tool_ctx = ToolContext::new("tu-alice", Arc::clone(&state.resolve_ctx));
+    let tool: Arc<GetBalanceTool> = state.container().resolve_external().await.unwrap();
+    let resolve_ctx = Arc::new(state.container().context().clone());
+    let mut tool_ctx = ToolContext::new("tu-alice", resolve_ctx);
     tool_ctx
         .state
         .insert("user_id".to_string(), serde_json::json!("alice"));
@@ -654,12 +651,9 @@ async fn test_get_balance_tool_without_user_id_returns_error() {
     use lauren_chatbot::tools::banking_tools::GetBalanceTool;
 
     let state = build_test_state().await;
-    let tool = state
-        .resolve_ctx
-        .resolve_external::<Arc<GetBalanceTool>>()
-        .await
-        .unwrap();
-    let tool_ctx = ToolContext::new("tu-noauth", Arc::clone(&state.resolve_ctx));
+    let tool: Arc<GetBalanceTool> = state.container().resolve_external().await.unwrap();
+    let resolve_ctx = Arc::new(state.container().context().clone());
+    let tool_ctx = ToolContext::new("tu-noauth", resolve_ctx);
 
     let result = tool
         .call(serde_json::json!({"user_id": "alice"}), &tool_ctx)
@@ -677,12 +671,9 @@ async fn test_get_balance_tool_for_unknown_user_returns_error() {
     use lauren_chatbot::tools::banking_tools::GetBalanceTool;
 
     let state = build_test_state().await;
-    let tool = state
-        .resolve_ctx
-        .resolve_external::<Arc<GetBalanceTool>>()
-        .await
-        .unwrap();
-    let mut tool_ctx = ToolContext::new("tu-unknown", Arc::clone(&state.resolve_ctx));
+    let tool: Arc<GetBalanceTool> = state.container().resolve_external().await.unwrap();
+    let resolve_ctx = Arc::new(state.container().context().clone());
+    let mut tool_ctx = ToolContext::new("tu-unknown", resolve_ctx);
     tool_ctx
         .state
         .insert("user_id".to_string(), serde_json::json!("nobody_xyz"));
@@ -700,12 +691,9 @@ async fn test_transfer_tool_requires_prior_approval() {
     use lauren_chatbot::tools::banking_tools::TransferFundsTool;
 
     let state = build_test_state().await;
-    let tool = state
-        .resolve_ctx
-        .resolve_external::<Arc<TransferFundsTool>>()
-        .await
-        .unwrap();
-    let mut tool_ctx = ToolContext::new("tu-transfer", Arc::clone(&state.resolve_ctx));
+    let tool: Arc<TransferFundsTool> = state.container().resolve_external().await.unwrap();
+    let resolve_ctx = Arc::new(state.container().context().clone());
+    let mut tool_ctx = ToolContext::new("tu-transfer", resolve_ctx);
     tool_ctx
         .state
         .insert("user_id".to_string(), serde_json::json!("alice"));
@@ -735,12 +723,9 @@ async fn test_transfer_tool_succeeds_with_approved_token() {
     use lauren_chatbot::tools::banking_tools::TransferFundsTool;
 
     let state = build_test_state().await;
-    let tool = state
-        .resolve_ctx
-        .resolve_external::<Arc<TransferFundsTool>>()
-        .await
-        .unwrap();
-    let mut tool_ctx = ToolContext::new("tu-transfer-ok", Arc::clone(&state.resolve_ctx));
+    let tool: Arc<TransferFundsTool> = state.container().resolve_external().await.unwrap();
+    let resolve_ctx = Arc::new(state.container().context().clone());
+    let mut tool_ctx = ToolContext::new("tu-transfer-ok", resolve_ctx);
     tool_ctx
         .state
         .insert("user_id".to_string(), serde_json::json!("alice"));

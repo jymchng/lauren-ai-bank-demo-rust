@@ -12,7 +12,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build application state via injectable container.
     // Config is loaded from environment variables inside the container.
     let state = build_app_state().await;
-    let port = state.config.port;
+    let config: std::sync::Arc<lauren_chatbot::config::AppConfig> = state
+        .container()
+        .resolve_external()
+        .await
+        .expect("AppConfig");
+    let port = config.port;
 
     let app = create_router(state);
 
