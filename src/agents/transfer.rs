@@ -7,10 +7,10 @@
 use agtrs::prelude::*;
 use injectable::prelude::*;
 
-use crate::agents::handoff::{HandoffToCrmTool, HandoffToDisputesTool};
 use crate::tools::approval_tool::ApprovalTool;
 use crate::tools::banking_tools::TransferFundsTool;
 use crate::tools::check_auth::CheckAuthenticationTool;
+use crate::tools::handoff::{HandoffToCrmTool, HandoffToDisputesTool};
 
 /// The bank transfer agent — handles fund transfers with approval workflow.
 #[agent(

@@ -7,8 +7,8 @@
 use agtrs::prelude::*;
 use injectable::prelude::*;
 
-use crate::agents::handoff::HandoffToAuthenticatedCrmTool;
 use crate::tools::check_auth::CheckAuthenticationTool;
+use crate::tools::handoff::HandoffToAuthenticatedCrmTool;
 use crate::tools::knowledge_tool::SearchPublicInfoTool;
 
 /// The unauthenticated CRM agent — handles public inquiries and authentication.

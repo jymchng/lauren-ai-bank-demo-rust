@@ -7,9 +7,9 @@
 use agtrs::prelude::*;
 use injectable::prelude::*;
 
-use crate::agents::handoff::{HandoffToCrmTool, HandoffToTransferTool};
 use crate::tools::banking_tools::{GetBalanceTool, GetTransactionHistoryTool};
 use crate::tools::check_auth::CheckAuthenticationTool;
+use crate::tools::handoff::{HandoffToCrmTool, HandoffToTransferTool};
 
 /// The disputes agent — handles transaction disputes and chargebacks.
 #[agent(

@@ -169,12 +169,21 @@ impl Tool for HandoffToAuthenticatedCrmTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolContext) -> Result<ToolResult, AgtrsError> {
-        let user_id = ctx
-            .state
-            .get("user_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if user_id.is_empty() {
+        // Prefer HTTP extensions (set by middleware) as authoritative auth source.
+        // Fall back to ctx.state for non-HTTP contexts (tests, CLI).
+        let is_authenticated = ctx
+            .extensions
+            .get::<crate::error::UserIdExtension>()
+            .map(|e| !e.0.is_empty())
+            .unwrap_or_else(|| {
+                !ctx.state
+                    .get("user_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .is_empty()
+            });
+
+        if !is_authenticated {
             return Ok(ToolResult::ok(
                 "Cannot hand off to authenticated CRM: user is not authenticated. Ask the user to log in first.",
                 &ctx.tool_use_id,

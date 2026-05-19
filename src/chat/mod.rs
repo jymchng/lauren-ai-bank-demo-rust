@@ -60,7 +60,7 @@ struct ChatDeps {
 /// SSE streaming chat endpoint (authenticated — user_id required in body).
 pub async fn stream_chat(
     State(state): State<AppState>,
-    RequestExtensions(extensions): RequestExtensions,
+    RequestExtensions(mut extensions): RequestExtensions,
     store: Inject<ActiveAgentStore>,
     approval: Inject<ApprovalService>,
     bus: Inject<AppSignalBus>,
@@ -78,6 +78,8 @@ pub async fn stream_chat(
         )
             .into_response();
     };
+
+    extensions.insert(crate::error::UserIdExtension(user_id.clone()));
 
     let conv_id = req
         .conversation_id

@@ -24,11 +24,19 @@ impl AccountSummaryTool {
         #[agtrs(tool_param(description = "Number of recent transactions to include"))] limit: u32,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
-        let user_id = ctx
-            .state
-            .get("user_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
+        let user_id_owned = ctx
+            .extensions
+            .get::<crate::error::UserIdExtension>()
+            .map(|e| e.0.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                ctx.state
+                    .get("user_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
+        let user_id = user_id_owned.as_str();
 
         Ok(ToolResult::ok(
             format!(

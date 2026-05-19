@@ -26,6 +26,17 @@ impl GetBalanceTool {
         user_id: String,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
+        if let Some(ext) = ctx.extensions.get::<crate::error::UserIdExtension>() {
+            if !ext.0.is_empty() && ext.0 != user_id {
+                return Ok(ToolResult::error(
+                    format!(
+                        "Unauthorized: authenticated as '{}', cannot access '{user_id}'",
+                        ext.0
+                    ),
+                    &ctx.tool_use_id,
+                ));
+            }
+        }
         let auth_uid = ctx
             .state
             .get("user_id")
@@ -78,6 +89,17 @@ impl TransferFundsTool {
         #[agtrs(tool_param(description = "The amount to transfer in USD"))] amount: f64,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
+        if let Some(ext) = ctx.extensions.get::<crate::error::UserIdExtension>() {
+            if !ext.0.is_empty() && ext.0 != user_id {
+                return Ok(ToolResult::error(
+                    format!(
+                        "Unauthorized: authenticated as '{}', cannot access '{user_id}'",
+                        ext.0
+                    ),
+                    &ctx.tool_use_id,
+                ));
+            }
+        }
         let auth_uid = ctx
             .state
             .get("user_id")
@@ -176,6 +198,17 @@ impl GetTransactionHistoryTool {
         user_id: String,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
+        if let Some(ext) = ctx.extensions.get::<crate::error::UserIdExtension>() {
+            if !ext.0.is_empty() && ext.0 != user_id {
+                return Ok(ToolResult::error(
+                    format!(
+                        "Unauthorized: authenticated as '{}', cannot access '{user_id}'",
+                        ext.0
+                    ),
+                    &ctx.tool_use_id,
+                ));
+            }
+        }
         let auth_uid = ctx
             .state
             .get("user_id")

@@ -7,9 +7,9 @@
 use agtrs::prelude::*;
 use injectable::prelude::*;
 
-use crate::agents::handoff::{HandoffToDisputesTool, HandoffToTransferTool};
 use crate::tools::banking_tools::{GetBalanceTool, GetTransactionHistoryTool};
 use crate::tools::check_auth::CheckAuthenticationTool;
+use crate::tools::handoff::{HandoffToDisputesTool, HandoffToTransferTool};
 
 /// The authenticated CRM agent — handles account inquiries for verified users.
 #[agent(
