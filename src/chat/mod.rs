@@ -257,15 +257,11 @@ fn build_chat_stream(
                 .await;
         }
 
-        let mut accumulated_history: Vec<Message> = deps
-            .conv_store
-            .load(&conversation_id)
-            .await
-            .unwrap_or_default();
-
         let current_message = message;
         let mut is_first_turn = true;
         let mut pending_input_summary: Option<String> = None;
+        // Last 2 messages from the outgoing agent, passed as seed context on handoff.
+        let mut handoff_seed: Vec<Message> = Vec::new();
 
         'handoff: for _ in 0..max_handoffs {
             let agent = match deps.agents.get(&current_agent_name) {
@@ -287,6 +283,16 @@ fn build_chat_stream(
                 }
             };
 
+            // Each agent has its own isolated conversation history.
+            let agent_conv_key = format!("{conversation_id}::{current_agent_name}");
+            let mut agent_history: Vec<Message> = deps
+                .conv_store
+                .load(&agent_conv_key)
+                .await
+                .unwrap_or_default();
+            // Append the handoff seed (last 2 msgs from the previous agent).
+            agent_history.extend(handoff_seed.drain(..));
+
             let mut ctx_state = HashMap::new();
             ctx_state.insert(
                 "conversation_id".to_string(),
@@ -307,7 +313,7 @@ fn build_chat_stream(
             )
             .with_signals(Arc::clone(&per_request_signals))
             .with_conversation_store(Arc::clone(&deps.conv_store) as Arc<dyn ConversationStore>)
-            .with_history(accumulated_history.iter().cloned())
+            .with_history(agent_history.iter().cloned())
             .with_state(ctx_state)
             .with_extensions(deps.extensions.clone())
             .build();
@@ -316,9 +322,10 @@ fn build_chat_stream(
                 AgentExecutor::run_stream(Arc::clone(&agent), Message::user(input_text), ctx);
 
             let mut done = false;
+            let mut completed_history: Vec<Message> = Vec::new();
             while let Some(event) = agent_stream.next().await {
                 if let StreamEvent::Done { messages, .. } = &event {
-                    accumulated_history = messages.clone();
+                    completed_history = messages.clone();
                     done = true;
                 }
                 if let Some(sse_event) = stream_event_to_sse(&event) {
@@ -329,6 +336,21 @@ fn build_chat_stream(
             if !done {
                 break;
             }
+
+            // Save this agent's conversation under its own key.
+            let _ = deps
+                .conv_store
+                .save(&agent_conv_key, &completed_history)
+                .await;
+
+            // Prepare handoff seed: last 2 messages from this agent's conversation.
+            handoff_seed = completed_history
+                .iter()
+                .rev()
+                .take(2)
+                .rev()
+                .cloned()
+                .collect();
 
             let new_agent = deps
                 .active_agent_store
@@ -357,11 +379,6 @@ fn build_chat_stream(
                 _ => break 'handoff,
             }
         }
-
-        let _ = deps
-            .conv_store
-            .save(&conversation_id, &accumulated_history)
-            .await;
 
         let _ = tx.unbounded_send(Ok(Event::default().event("done").data("")));
 
