@@ -8,6 +8,7 @@ use std::sync::Arc;
 use agtrs::prelude::*;
 use agtrs_runtime::memory::InMemoryConversationStore;
 use agtrs_runtime::signals as agtrs_sig;
+use agtrs_runtime::team::{HandoffAgentStore, HandoffEvent, HandoffOrchestrator, HandoffRunParams};
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
@@ -16,10 +17,8 @@ use futures::StreamExt;
 use injectable::axum::InjectableState;
 use injectable::prelude::*;
 use serde_json::json;
+use tracing::{info, warn};
 
-use tracing::{debug, error, info, warn};
-
-use crate::agents::active_agent_store::ActiveAgentStore;
 use crate::agents::auth_crm::AuthenticatedCrmAgent;
 use crate::agents::disputes::DisputesAgent;
 use crate::agents::transfer::BankTransferAgent;
@@ -46,16 +45,11 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequestExtensions {
     }
 }
 
-/// All dependencies needed by the chat stream loop — built once in the handler
-/// and moved into the spawned task.
+/// All dependencies needed by the chat stream loop.
 struct ChatDeps {
-    agents: HashMap<String, Arc<dyn Agent>>,
-    active_agent_store: Arc<ActiveAgentStore>,
+    orchestrator: HandoffOrchestrator,
     approval_service: Arc<ApprovalService>,
     signal_bus: Arc<AppSignalBus>,
-    conv_store: Arc<InMemoryConversationStore>,
-    llm: Arc<dyn LlmProvider>,
-    resolve_ctx: Arc<injectable_runtime::ResolveContext>,
     extensions: axum::http::Extensions,
 }
 
@@ -63,7 +57,7 @@ struct ChatDeps {
 pub async fn stream_chat(
     State(state): State<AppState>,
     RequestExtensions(mut extensions): RequestExtensions,
-    store: Inject<ActiveAgentStore>,
+    store: Inject<HandoffAgentStore>,
     approval: Inject<ApprovalService>,
     bus: Inject<AppSignalBus>,
     conv_store: Inject<InMemoryConversationStore>,
@@ -102,7 +96,7 @@ pub async fn stream_chat(
 pub async fn stream_chat_public(
     State(state): State<AppState>,
     RequestExtensions(extensions): RequestExtensions,
-    store: Inject<ActiveAgentStore>,
+    store: Inject<HandoffAgentStore>,
     approval: Inject<ApprovalService>,
     bus: Inject<AppSignalBus>,
     conv_store: Inject<InMemoryConversationStore>,
@@ -129,7 +123,7 @@ pub async fn stream_chat_public(
 fn build_deps(
     state: AppState,
     extensions: axum::http::Extensions,
-    store: Inject<ActiveAgentStore>,
+    store: Inject<HandoffAgentStore>,
     approval: Inject<ApprovalService>,
     bus: Inject<AppSignalBus>,
     conv_store: Inject<InMemoryConversationStore>,
@@ -138,7 +132,7 @@ fn build_deps(
     transfer: Inject<BankTransferAgent>,
     disputes: Inject<DisputesAgent>,
 ) -> ChatDeps {
-    let agents: HashMap<String, Arc<dyn Agent>> = [
+    let agents = [
         (
             "Banking CRM Agent (Public)",
             Arc::clone(&unauth.0) as Arc<dyn Agent>,
@@ -157,24 +151,25 @@ fn build_deps(
         ),
     ]
     .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect();
+    .map(|(k, v)| (k.to_string(), v));
 
-    let resolve_ctx = Arc::new(state.resolve_context().clone());
+    let orchestrator = HandoffOrchestrator::builder()
+        .agents(agents)
+        .conv_store(Arc::clone(&conv_store.0) as Arc<dyn ConversationStore>)
+        .agent_store(Arc::clone(&store.0))
+        .llm(Arc::clone(&state.llm))
+        .resolve_ctx(Arc::new(state.resolve_context().clone()))
+        .build();
 
     ChatDeps {
-        agents,
-        active_agent_store: Arc::clone(&store.0),
+        orchestrator,
         approval_service: Arc::clone(&approval.0),
         signal_bus: Arc::clone(&bus.0),
-        conv_store: Arc::clone(&conv_store.0),
-        llm: Arc::clone(&state.llm),
-        resolve_ctx,
         extensions,
     }
 }
 
-/// Build a multi-agent streaming response with handoff support.
+/// Build a multi-agent streaming SSE response with handoff support.
 fn build_chat_stream(
     deps: ChatDeps,
     message: String,
@@ -182,40 +177,25 @@ fn build_chat_stream(
     user_id: Option<String>,
 ) -> impl futures::Stream<Item = Result<Event, Infallible>> + Send + 'static {
     let (tx, rx) = futures::channel::mpsc::unbounded::<Result<Event, Infallible>>();
-    let approval_svc = Arc::clone(&deps.approval_service);
-    let conv_id_cleanup = conversation_id.clone();
 
     tokio::spawn(async move {
-        let authenticated = user_id.is_some();
-        let max_handoffs: usize = if authenticated { 8 } else { 4 };
+        let max_handoffs: usize = if user_id.is_some() { 8 } else { 4 };
+        let initial_agent = if user_id.is_some() {
+            "Banking CRM Agent (Authenticated)"
+        } else {
+            "Banking CRM Agent (Public)"
+        }
+        .to_string();
 
         info!(
             conv_id = %conversation_id,
-            authenticated,
+            authenticated = user_id.is_some(),
             max_handoffs,
             "Chat stream started"
         );
 
-        let mut current_agent_name = deps
-            .active_agent_store
-            .get_active_agent(&conversation_id)
-            .await
-            .unwrap_or_else(|| {
-                if authenticated {
-                    "Banking CRM Agent (Authenticated)".to_string()
-                } else {
-                    "Banking CRM Agent (Public)".to_string()
-                }
-            });
-
-        info!(
-            conv_id = %conversation_id,
-            agent = %current_agent_name,
-            "Initial agent resolved"
-        );
-
-        // Per-request signal bus — bridges executor-native signals to the shared WS broadcast
-        // with the current conversation_id injected so the frontend can route them.
+        // Per-request signal bus — bridges executor signals to the shared WS broadcast
+        // with conversation_id injected so the frontend can route them.
         let per_request_signals = Arc::new(agtrs_runtime::signals::SignalBus::new());
         {
             let conv_id = conversation_id.clone();
@@ -274,232 +254,67 @@ fn build_chat_stream(
                 .await;
         }
 
-        let raw_message = message.clone();
-        // current_prompt starts as the user's message and is rebuilt on each handoff.
-        let mut current_prompt = message;
-        let mut handoff_count: usize = 0;
-
-        'handoff: for turn in 0..max_handoffs {
-            let agent = match deps.agents.get(&current_agent_name) {
-                Some(a) => Arc::clone(a),
-                None => {
-                    error!(
-                        conv_id = %conversation_id,
-                        agent = %current_agent_name,
-                        turn,
-                        "Agent not found in registry — aborting stream"
-                    );
-                    break;
-                }
-            };
-
-            let _ = tx.unbounded_send(Ok(Event::default()
-                .event("agent_started")
-                .data(current_agent_name.clone())));
-
-            // Each agent has its own isolated conversation history.
-            let agent_conv_key = format!("{conversation_id}::{current_agent_name}");
-            let agent_history: Vec<Message> = match deps.conv_store.load(&agent_conv_key).await {
-                Ok(h) => {
-                    debug!(
-                        conv_id = %conversation_id,
-                        agent = %current_agent_name,
-                        history_len = h.len(),
-                        "Loaded agent history"
-                    );
-                    h
-                }
-                Err(e) => {
-                    warn!(
-                        conv_id = %conversation_id,
-                        agent = %current_agent_name,
-                        error = %e,
-                        "Failed to load agent history — starting fresh"
-                    );
-                    vec![]
-                }
-            };
-
-            info!(
-                conv_id = %conversation_id,
-                agent = %current_agent_name,
-                turn,
-                handoff_count,
-                history_len = agent_history.len(),
-                prompt_len = current_prompt.len(),
-                "Running agent"
-            );
-
-            let mut ctx_state = HashMap::new();
+        // Build per-request context state.
+        let mut ctx_state = HashMap::new();
+        if let Some(ref uid) = user_id {
             ctx_state.insert(
-                "conversation_id".to_string(),
-                serde_json::Value::String(conversation_id.clone()),
+                "user_id".to_string(),
+                serde_json::Value::String(uid.clone()),
             );
-            if let Some(ref uid) = user_id {
-                ctx_state.insert(
-                    "user_id".to_string(),
-                    serde_json::Value::String(uid.clone()),
-                );
-            }
+        }
 
-            let ctx = AgentContext::builder(
-                &current_agent_name,
-                agent.config().clone(),
-                Arc::clone(&deps.llm),
-                Arc::clone(&deps.resolve_ctx),
-            )
-            .with_signals(Arc::clone(&per_request_signals))
-            .with_conversation_store(Arc::clone(&deps.conv_store) as Arc<dyn ConversationStore>)
-            .with_history(agent_history.iter().cloned())
-            .with_state(ctx_state)
-            .with_extensions(deps.extensions.clone())
-            .build();
+        // Run the orchestrator and map HandoffEvents to SSE events.
+        let mut event_stream = deps.orchestrator.run_stream(HandoffRunParams {
+            message,
+            conversation_id: conversation_id.clone(),
+            initial_agent,
+            context_state: ctx_state,
+            extensions: deps.extensions,
+            signals: Some(Arc::clone(&per_request_signals)),
+            max_handoffs_override: Some(max_handoffs),
+        });
 
-            let mut agent_stream = AgentExecutor::run_stream(
-                Arc::clone(&agent),
-                Message::user(current_prompt.clone()),
-                ctx,
-            );
-
-            let mut done = false;
-            let mut completed_history: Vec<Message> = Vec::new();
-            while let Some(event) = agent_stream.next().await {
-                if let StreamEvent::Done { messages, .. } = &event {
-                    debug!(
-                        conv_id = %conversation_id,
-                        agent = %current_agent_name,
-                        output_messages = messages.len(),
-                        "Agent stream done"
-                    );
-                    completed_history = messages.clone();
-                    done = true;
+        while let Some(event) = event_stream.next().await {
+            match &event {
+                HandoffEvent::AgentStarted { agent_name } => {
+                    let _ = tx.unbounded_send(Ok(Event::default()
+                        .event("agent_started")
+                        .data(agent_name.clone())));
                 }
-                if let Some(sse_event) = stream_event_to_sse(&event) {
-                    if tx.unbounded_send(Ok(sse_event)).is_err() {
-                        warn!(
-                            conv_id = %conversation_id,
-                            agent = %current_agent_name,
-                            "SSE receiver dropped — client disconnected"
-                        );
-                        break;
+                HandoffEvent::AgentEvent(stream_event) => {
+                    if let Some(sse_event) = stream_event_to_sse(stream_event) {
+                        if tx.unbounded_send(Ok(sse_event)).is_err() {
+                            warn!(
+                                conv_id = %conversation_id,
+                                "SSE receiver dropped — client disconnected"
+                            );
+                            break;
+                        }
                     }
                 }
-            }
-
-            if !done {
-                warn!(
-                    conv_id = %conversation_id,
-                    agent = %current_agent_name,
-                    turn,
-                    "Agent stream ended without Done event — aborting handoff loop"
-                );
-                break;
-            }
-
-            // Save this agent's conversation under its own isolated key.
-            if let Err(e) = deps
-                .conv_store
-                .save(&agent_conv_key, &completed_history)
-                .await
-            {
-                warn!(
-                    conv_id = %conversation_id,
-                    agent = %current_agent_name,
-                    error = %e,
-                    "Failed to save agent history"
-                );
-            } else {
-                debug!(
-                    conv_id = %conversation_id,
-                    agent = %current_agent_name,
-                    messages_saved = completed_history.len(),
-                    "Agent history saved"
-                );
-            }
-
-            let new_agent = deps
-                .active_agent_store
-                .get_active_agent(&conversation_id)
-                .await;
-            match new_agent {
-                Some(name) if name != current_agent_name => {
-                    let handoff_summary = deps
-                        .active_agent_store
-                        .get_and_clear_summary(&conversation_id)
-                        .await
-                        .unwrap_or_default();
-
-                    handoff_count += 1;
-                    info!(
-                        conv_id = %conversation_id,
-                        from_agent = %current_agent_name,
-                        to_agent = %name,
-                        handoff_count,
-                        has_summary = !handoff_summary.is_empty(),
-                        "Agent handoff"
-                    );
-
-                    if handoff_count >= max_handoffs {
-                        warn!(
-                            conv_id = %conversation_id,
-                            max_handoffs,
-                            "Max handoffs reached — breaking loop"
-                        );
-                    }
-
+                HandoffEvent::AgentHandoff {
+                    from_agent,
+                    to_agent,
+                    summary,
+                } => {
                     deps.signal_bus.emit(AppSignal::AgentHandoff {
-                        from_agent: current_agent_name.clone(),
-                        to_agent: name.clone(),
-                        summary: handoff_summary.clone(),
+                        from_agent: from_agent.clone(),
+                        to_agent: to_agent.clone(),
+                        summary: summary.clone(),
                         conversation_id: conversation_id.clone(),
                     });
-                    let _ =
-                        tx.unbounded_send(Ok(Event::default().event("break").data(name.clone())));
-
-                    // Reconstruct the prompt for the next agent.
-                    // Authenticated: structured handoff context + original request.
-                    // Public: summary only, falling back to original message.
-                    current_prompt = if !handoff_summary.is_empty() {
-                        if user_id.is_some() {
-                            format!(
-                                "[HANDOFF from {}]: {}\n\n[ORIGINAL REQUEST]: {}",
-                                current_agent_name, handoff_summary, raw_message
-                            )
-                        } else {
-                            handoff_summary
-                        }
-                    } else {
-                        warn!(
-                            conv_id = %conversation_id,
-                            from_agent = %current_agent_name,
-                            to_agent = %name,
-                            "Handoff has no summary — reusing original message"
-                        );
-                        raw_message.clone()
-                    };
-
-                    current_agent_name = name;
+                    let _ = tx
+                        .unbounded_send(Ok(Event::default().event("break").data(to_agent.clone())));
                 }
-                _ => {
-                    debug!(
-                        conv_id = %conversation_id,
-                        agent = %current_agent_name,
-                        "No handoff — agent loop complete"
-                    );
-                    break 'handoff;
+                HandoffEvent::Completed => {
+                    info!(conv_id = %conversation_id, "Chat stream complete");
+                    let _ = tx.unbounded_send(Ok(Event::default().event("done").data("")));
+                    deps.approval_service
+                        .cancel_approval(&conversation_id)
+                        .await;
                 }
             }
         }
-
-        info!(
-            conv_id = %conversation_id,
-            total_handoffs = handoff_count,
-            "Chat stream complete"
-        );
-
-        let _ = tx.unbounded_send(Ok(Event::default().event("done").data("")));
-
-        approval_svc.cancel_approval(&conv_id_cleanup).await;
     });
 
     rx
@@ -604,5 +419,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // make_req is used in integration tests that import this module
+    #[allow(dead_code)]
+    fn _use_make_req() {
+        let _ = make_req("test");
     }
 }

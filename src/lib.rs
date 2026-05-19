@@ -20,6 +20,7 @@ use std::sync::Arc;
 use agtrs::prelude::*;
 use agtrs_runtime::cost::{CostTracker, PricingTable};
 use agtrs_runtime::memory::InMemoryConversationStore;
+use agtrs_runtime::team::HandoffAgentStore;
 use injectable::axum::{AxumState, InjectableState};
 use injectable::prelude::*;
 use injectable_runtime::ResolveContext;
@@ -69,9 +70,11 @@ pub async fn build_app_state() -> AppState {
     // `DynProvider<Arc<T>>` so `Inject<T>` can extract them in handlers.
     let conv_store = Arc::new(InMemoryConversationStore::new());
     let cost_tracker = Arc::new(CostTracker::new(Arc::new(PricingTable::default_pricing())));
+    let agent_store = Arc::new(HandoffAgentStore::new());
 
     let conv_store_dyn = Arc::clone(&conv_store);
     let cost_tracker_dyn = Arc::clone(&cost_tracker);
+    let agent_store_dyn = Arc::clone(&agent_store);
 
     let container = Container::builder()
         .register(DynProvider::<Arc<InMemoryConversationStore>>::sync(
@@ -79,6 +82,9 @@ pub async fn build_app_state() -> AppState {
         ))
         .register(DynProvider::<Arc<CostTracker>>::sync(move || {
             Ok(Arc::clone(&cost_tracker_dyn))
+        }))
+        .register(DynProvider::<Arc<HandoffAgentStore>>::sync(move || {
+            Ok(Arc::clone(&agent_store_dyn))
         }))
         .build()
         .await

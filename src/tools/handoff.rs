@@ -4,15 +4,15 @@ use agtrs::prelude::*;
 use injectable::prelude::*;
 use serde_json::{json, Value};
 
-use crate::agents::active_agent_store::ActiveAgentStore;
+use agtrs_runtime::team::HandoffAgentStore;
 
 // ── HandoffToCrmTool ──────────────────────────────────────────────────────────
 
 /// Tool to hand off to the Authenticated CRM agent.
 #[injectable]
 pub struct HandoffToCrmTool {
-    #[injectable(inject)]
-    store: Arc<ActiveAgentStore>,
+    #[injectable(inject(external))]
+    store: Arc<HandoffAgentStore>,
 }
 
 #[async_trait::async_trait]
@@ -57,8 +57,8 @@ impl Tool for HandoffToCrmTool {
 /// Tool to hand off to the Bank Transfer agent.
 #[injectable]
 pub struct HandoffToTransferTool {
-    #[injectable(inject)]
-    store: Arc<ActiveAgentStore>,
+    #[injectable(inject(external))]
+    store: Arc<HandoffAgentStore>,
 }
 
 #[async_trait::async_trait]
@@ -103,8 +103,8 @@ impl Tool for HandoffToTransferTool {
 /// Tool to hand off to the Disputes agent.
 #[injectable]
 pub struct HandoffToDisputesTool {
-    #[injectable(inject)]
-    store: Arc<ActiveAgentStore>,
+    #[injectable(inject(external))]
+    store: Arc<HandoffAgentStore>,
 }
 
 #[async_trait::async_trait]
@@ -149,8 +149,8 @@ impl Tool for HandoffToDisputesTool {
 /// Tool to hand off to the Authenticated CRM agent (requires authentication).
 #[injectable]
 pub struct HandoffToAuthenticatedCrmTool {
-    #[injectable(inject)]
-    store: Arc<ActiveAgentStore>,
+    #[injectable(inject(external))]
+    store: Arc<HandoffAgentStore>,
 }
 
 #[async_trait::async_trait]
@@ -226,7 +226,7 @@ mod tests {
     async fn test_handoff_to_crm() {
         let state = create_test_state().await;
         let tool: Arc<HandoffToCrmTool> = state.container().resolve_external().await.unwrap();
-        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
+        let store: Arc<HandoffAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("alice", "conv1").await;
         let result = tool
             .call(json!({"reason": "General help"}), &ctx)
@@ -244,7 +244,7 @@ mod tests {
     async fn test_handoff_to_transfer() {
         let state = create_test_state().await;
         let tool: Arc<HandoffToTransferTool> = state.container().resolve_external().await.unwrap();
-        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
+        let store: Arc<HandoffAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("alice", "conv1").await;
         let result = tool
             .call(json!({"reason": "Transfer needed"}), &ctx)
@@ -261,7 +261,7 @@ mod tests {
     async fn test_handoff_to_disputes() {
         let state = create_test_state().await;
         let tool: Arc<HandoffToDisputesTool> = state.container().resolve_external().await.unwrap();
-        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
+        let store: Arc<HandoffAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("alice", "conv1").await;
         let result = tool.call(json!({"reason": "Dispute"}), &ctx).await.unwrap();
         assert!(!result.is_error);
@@ -276,7 +276,7 @@ mod tests {
         let state = create_test_state().await;
         let tool: Arc<HandoffToAuthenticatedCrmTool> =
             state.container().resolve_external().await.unwrap();
-        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
+        let store: Arc<HandoffAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("alice", "conv1").await;
         let result = tool
             .call(json!({"reason": "Authenticated"}), &ctx)
@@ -294,7 +294,7 @@ mod tests {
         let state = create_test_state().await;
         let tool: Arc<HandoffToAuthenticatedCrmTool> =
             state.container().resolve_external().await.unwrap();
-        let store: Arc<ActiveAgentStore> = state.container().resolve_external().await.unwrap();
+        let store: Arc<HandoffAgentStore> = state.container().resolve_external().await.unwrap();
         let ctx = make_ctx("", "conv1").await;
         let result = tool
             .call(json!({"reason": "Unauthenticated"}), &ctx)
@@ -309,28 +309,28 @@ mod tests {
     fn test_tool_names() {
         assert_eq!(
             HandoffToCrmTool {
-                store: Arc::new(ActiveAgentStore::new())
+                store: Arc::new(HandoffAgentStore::new())
             }
             .name(),
             "handoff_to_crm"
         );
         assert_eq!(
             HandoffToTransferTool {
-                store: Arc::new(ActiveAgentStore::new())
+                store: Arc::new(HandoffAgentStore::new())
             }
             .name(),
             "handoff_to_transfer"
         );
         assert_eq!(
             HandoffToDisputesTool {
-                store: Arc::new(ActiveAgentStore::new())
+                store: Arc::new(HandoffAgentStore::new())
             }
             .name(),
             "handoff_to_disputes"
         );
         assert_eq!(
             HandoffToAuthenticatedCrmTool {
-                store: Arc::new(ActiveAgentStore::new())
+                store: Arc::new(HandoffAgentStore::new())
             }
             .name(),
             "handoff_to_authenticated_crm"
