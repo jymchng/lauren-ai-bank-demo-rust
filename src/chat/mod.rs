@@ -66,7 +66,6 @@ pub async fn stream_chat(
     auth: Inject<AuthenticatedCrmAgent>,
     transfer: Inject<BankTransferAgent>,
     disputes: Inject<DisputesAgent>,
-    audit: Inject<AuditLogHook>,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
     let Some(user_id) = req.user_id.clone() else {
@@ -86,17 +85,7 @@ pub async fn stream_chat(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let deps = build_deps(
-        state,
-        extensions,
-        store,
-        approval,
-        bus,
-        conv_store,
-        unauth,
-        auth,
-        transfer,
-        disputes,
-        Arc::clone(&audit.0),
+        state, extensions, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
     );
     let event_stream = build_chat_stream(deps, req.last_user_message(), conv_id, Some(user_id));
     Sse::new(Box::pin(event_stream))
@@ -116,7 +105,6 @@ pub async fn stream_chat_public(
     auth: Inject<AuthenticatedCrmAgent>,
     transfer: Inject<BankTransferAgent>,
     disputes: Inject<DisputesAgent>,
-    audit: Inject<AuditLogHook>,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
     let conv_id = req
@@ -125,17 +113,7 @@ pub async fn stream_chat_public(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let deps = build_deps(
-        state,
-        extensions,
-        store,
-        approval,
-        bus,
-        conv_store,
-        unauth,
-        auth,
-        transfer,
-        disputes,
-        Arc::clone(&audit.0),
+        state, extensions, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
     );
     let event_stream = build_chat_stream(deps, req.last_user_message(), conv_id, None);
     Sse::new(Box::pin(event_stream))
@@ -154,7 +132,6 @@ fn build_deps(
     auth: Inject<AuthenticatedCrmAgent>,
     transfer: Inject<BankTransferAgent>,
     disputes: Inject<DisputesAgent>,
-    audit_hook: Arc<AuditLogHook>,
 ) -> ChatDeps {
     let agents = [
         (
@@ -183,7 +160,7 @@ fn build_deps(
         .agent_store(Arc::clone(&store.0))
         .llm(Arc::clone(&state.llm))
         .resolve_ctx(Arc::new(state.resolve_context().clone()))
-        .with_global_tool_hook(audit_hook as Arc<dyn ToolHook>)
+        .with_global_tool_hook(Arc::new(AuditLogHook) as Arc<dyn ToolHook>)
         .build();
 
     ChatDeps {
