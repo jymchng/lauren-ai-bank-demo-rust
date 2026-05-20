@@ -646,15 +646,32 @@ async fn test_get_balance_tool_returns_alice_balance() {
 
 #[tokio::test]
 async fn test_get_balance_tool_without_user_id_returns_error() {
+    // Auth check lives in AuthRequiredHook — must use execute_with_hooks, not call().
     use agtrs::prelude::*;
+    use agtrs_runtime::agent::{AgentConfig, AgentContext};
+    use injectable_runtime::{EmptySingletonStore, ResolveContext};
     use lauren_chatbot::tools::banking_tools::GetBalanceTool;
 
     let state = build_test_state().await;
     let tool: Arc<GetBalanceTool> = state.container().resolve_external().await.unwrap();
-    let tool_ctx = ToolContext::new("tu-noauth");
+    let tool_ctx = ToolContext::new("tu-noauth"); // no UserIdExtension
+
+    let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
+    let agent_ctx = AgentContext::new(
+        "test",
+        AgentConfig::default(),
+        Arc::new(agtrs::agtrs_runtime::testing::MockLlmProvider::new(
+            Arc::new(agtrs::agtrs_runtime::testing::MockTransport::new()),
+        )),
+        resolve_ctx,
+    );
 
     let result = tool
-        .call(serde_json::json!({"user_id": "alice"}), &tool_ctx)
+        .execute_with_hooks(
+            serde_json::json!({"user_id": "alice"}),
+            &tool_ctx,
+            &agent_ctx,
+        )
         .await
         .unwrap();
     assert!(

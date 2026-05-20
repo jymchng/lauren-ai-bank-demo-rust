@@ -7,6 +7,23 @@ use crate::approval::service::ApprovalService;
 use crate::banking::db::BankDatabase;
 use crate::signals::bus::{AppSignal, AppSignalBus};
 
+// Helper functions
+
+fn auth_uid(ctx: &ToolContext) -> Option<String> {
+    ctx.extensions
+        .get::<crate::error::UserIdExtension>()
+        .map(|e| e.0.clone())
+        .filter(|s| !s.is_empty())
+}
+
+fn conv_id(ctx: &ToolContext) -> String {
+    ctx.state
+        .get("conversation_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 // ── GetBalanceTool ────────────────────────────────────────────────────────────
 
 /// Tool to get the account balance for the authenticated user.
@@ -16,7 +33,10 @@ pub struct GetBalanceTool {
     db: Arc<BankDatabase>,
 }
 
-#[tool(name = "get_balance")]
+#[tool(name = "get_balance", hooks(
+    crate::tools::hooks::AuthRequiredHook,
+    crate::tools::hooks::IdorGuardHook { user_id_field: "user_id" },
+))]
 impl GetBalanceTool {
     /// Get the account balance for the authenticated user.
     #[agtrs(tool_run)]
@@ -26,23 +46,10 @@ impl GetBalanceTool {
         user_id: String,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
-        let auth_uid = ctx
-            .extensions
-            .get::<crate::error::UserIdExtension>()
-            .map(|e| e.0.clone())
-            .unwrap_or_default();
-        if auth_uid.is_empty() {
-            return Ok(ToolResult::error(
-                "User not authenticated",
-                &ctx.tool_use_id,
-            ));
-        }
-        if user_id != auth_uid {
-            return Ok(ToolResult::error(
-                format!("Unauthorized: authenticated as '{auth_uid}', cannot access '{user_id}'"),
-                &ctx.tool_use_id,
-            ));
-        }
+        let auth_uid = auth_uid(ctx).ok_or_else(|| AgtrsError::ToolCallRejected {
+            tool_name: "get_balance".into(),
+            reason: "Authentication required".into(),
+        })?;
         match self.db.get_balance(&auth_uid).await {
             Some(balance) => Ok(ToolResult::ok(
                 format!("Balance: ${:.2}", balance),
@@ -66,7 +73,10 @@ pub struct TransferFundsTool {
     signal_bus: Arc<AppSignalBus>,
 }
 
-#[tool(name = "transfer_funds", requires_confirmation = true)]
+#[tool(name = "transfer_funds", requires_confirmation = true, hooks(
+    crate::tools::hooks::AuthRequiredHook,
+    crate::tools::hooks::IdorGuardHook { user_id_field: "user_id" },
+))]
 impl TransferFundsTool {
     /// Transfer funds from the authenticated user's account to another user.
     #[agtrs(tool_run)]
@@ -78,24 +88,10 @@ impl TransferFundsTool {
         #[agtrs(tool_param(description = "The amount to transfer in USD"))] amount: f64,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
-        let auth_uid = ctx
-            .extensions
-            .get::<crate::error::UserIdExtension>()
-            .map(|e| e.0.clone())
-            .unwrap_or_default();
-        if auth_uid.is_empty() {
-            return Ok(ToolResult::error(
-                "User not authenticated",
-                &ctx.tool_use_id,
-            ));
-        }
-        if user_id != auth_uid {
-            return Ok(ToolResult::error(
-                format!("Unauthorized: authenticated as '{auth_uid}', cannot access '{user_id}'"),
-                &ctx.tool_use_id,
-            ));
-        }
-
+        let auth_uid = auth_uid(ctx).ok_or_else(|| AgtrsError::ToolCallRejected {
+            tool_name: "transfer_funds".into(),
+            reason: "Authentication required".into(),
+        })?;
         if to_user.is_empty() {
             return Ok(ToolResult::error(
                 "Recipient user ID is required",
@@ -109,13 +105,7 @@ impl TransferFundsTool {
             ));
         }
 
-        let conv_id = ctx
-            .state
-            .get("conversation_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
+        let conv_id = conv_id(ctx);
         let token = self.approval_svc.get_approved_transfer(&conv_id).await;
         let approved = token
             .as_ref()
@@ -166,7 +156,10 @@ pub struct GetTransactionHistoryTool {
     db: Arc<BankDatabase>,
 }
 
-#[tool(name = "get_transaction_history")]
+#[tool(name = "get_transaction_history", hooks(
+    crate::tools::hooks::AuthRequiredHook,
+    crate::tools::hooks::IdorGuardHook { user_id_field: "user_id" },
+))]
 impl GetTransactionHistoryTool {
     /// Get transaction history for the authenticated user.
     #[agtrs(tool_run)]
@@ -176,23 +169,10 @@ impl GetTransactionHistoryTool {
         user_id: String,
         ctx: &ToolContext,
     ) -> Result<ToolResult, AgtrsError> {
-        let auth_uid = ctx
-            .extensions
-            .get::<crate::error::UserIdExtension>()
-            .map(|e| e.0.clone())
-            .unwrap_or_default();
-        if auth_uid.is_empty() {
-            return Ok(ToolResult::error(
-                "User not authenticated",
-                &ctx.tool_use_id,
-            ));
-        }
-        if user_id != auth_uid {
-            return Ok(ToolResult::error(
-                format!("Unauthorized: authenticated as '{auth_uid}', cannot access '{user_id}'"),
-                &ctx.tool_use_id,
-            ));
-        }
+        let auth_uid = auth_uid(ctx).ok_or_else(|| AgtrsError::ToolCallRejected {
+            tool_name: "get_transaction_history".into(),
+            reason: "Authentication required".into(),
+        })?;
 
         let transactions = self.db.get_transactions(&auth_uid).await;
         if transactions.is_empty() {
@@ -219,6 +199,8 @@ impl GetTransactionHistoryTool {
 mod tests {
     use super::*;
     use crate::signals::bus::AppSignalBus;
+    use agtrs_runtime::agent::{AgentConfig, AgentContext};
+    use injectable_runtime::{EmptySingletonStore, ResolveContext};
     use serde_json::json;
 
     fn make_db() -> Arc<BankDatabase> {
@@ -242,6 +224,18 @@ mod tests {
         ctx.state
             .insert("conversation_id".into(), json!("test-conv"));
         ctx
+    }
+
+    fn make_agent_ctx() -> AgentContext {
+        let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
+        AgentContext::new(
+            "test-agent",
+            AgentConfig::default(),
+            Arc::new(agtrs_runtime::testing::MockLlmProvider::new(Arc::new(
+                agtrs_runtime::testing::MockTransport::new(),
+            ))),
+            resolve_ctx,
+        )
     }
 
     async fn make_transfer_tool_with_approval(
@@ -273,18 +267,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_balance_unauthenticated() {
+        // Inline auth check removed — hooks enforce this; test via execute_with_hooks.
         let tool = GetBalanceTool { db: make_db() };
         let ctx = make_ctx("");
-        let result = tool.call(json!({"user_id": "alice"}), &ctx).await.unwrap();
+        let result = tool
+            .execute_with_hooks(json!({"user_id": "alice"}), &ctx, &make_agent_ctx())
+            .await
+            .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("not authenticated"));
     }
 
     #[tokio::test]
     async fn test_get_balance_mismatched_user_id() {
+        // IDOR guard is in the hook — test via execute_with_hooks.
         let tool = GetBalanceTool { db: make_db() };
         let ctx = make_ctx("alice");
-        let result = tool.call(json!({"user_id": "bob"}), &ctx).await.unwrap();
+        let result = tool
+            .execute_with_hooks(json!({"user_id": "bob"}), &ctx, &make_agent_ctx())
+            .await
+            .unwrap();
         assert!(result.is_error);
         assert!(result.content.contains("Unauthorized"));
         assert!(result.content.contains("alice"));
@@ -346,9 +348,10 @@ mod tests {
         };
         let ctx = make_ctx("");
         let result = tool
-            .call(
+            .execute_with_hooks(
                 json!({"user_id": "alice", "to_user": "bob", "amount": 100}),
                 &ctx,
+                &make_agent_ctx(),
             )
             .await
             .unwrap();
@@ -365,9 +368,10 @@ mod tests {
         };
         let ctx = make_ctx("alice");
         let result = tool
-            .call(
+            .execute_with_hooks(
                 json!({"user_id": "charlie", "to_user": "bob", "amount": 100}),
                 &ctx,
+                &make_agent_ctx(),
             )
             .await
             .unwrap();

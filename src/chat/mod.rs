@@ -28,6 +28,7 @@ use crate::chat::schemas::ChatRequest;
 use crate::chat::sse::stream_event_to_sse;
 use crate::signals::bus::AppSignal;
 use crate::signals::bus::AppSignalBus;
+use crate::tools::hooks::AuditLogHook;
 use crate::AppState;
 
 /// Captures the full `axum::http::Extensions` map from request parts so middleware-injected
@@ -65,6 +66,7 @@ pub async fn stream_chat(
     auth: Inject<AuthenticatedCrmAgent>,
     transfer: Inject<BankTransferAgent>,
     disputes: Inject<DisputesAgent>,
+    audit: Inject<AuditLogHook>,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
     let Some(user_id) = req.user_id.clone() else {
@@ -84,7 +86,17 @@ pub async fn stream_chat(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let deps = build_deps(
-        state, extensions, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
+        state,
+        extensions,
+        store,
+        approval,
+        bus,
+        conv_store,
+        unauth,
+        auth,
+        transfer,
+        disputes,
+        Arc::clone(&audit.0),
     );
     let event_stream = build_chat_stream(deps, req.last_user_message(), conv_id, Some(user_id));
     Sse::new(Box::pin(event_stream))
@@ -104,6 +116,7 @@ pub async fn stream_chat_public(
     auth: Inject<AuthenticatedCrmAgent>,
     transfer: Inject<BankTransferAgent>,
     disputes: Inject<DisputesAgent>,
+    audit: Inject<AuditLogHook>,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
     let conv_id = req
@@ -112,7 +125,17 @@ pub async fn stream_chat_public(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let deps = build_deps(
-        state, extensions, store, approval, bus, conv_store, unauth, auth, transfer, disputes,
+        state,
+        extensions,
+        store,
+        approval,
+        bus,
+        conv_store,
+        unauth,
+        auth,
+        transfer,
+        disputes,
+        Arc::clone(&audit.0),
     );
     let event_stream = build_chat_stream(deps, req.last_user_message(), conv_id, None);
     Sse::new(Box::pin(event_stream))
@@ -131,6 +154,7 @@ fn build_deps(
     auth: Inject<AuthenticatedCrmAgent>,
     transfer: Inject<BankTransferAgent>,
     disputes: Inject<DisputesAgent>,
+    audit_hook: Arc<AuditLogHook>,
 ) -> ChatDeps {
     let agents = [
         (
@@ -159,6 +183,7 @@ fn build_deps(
         .agent_store(Arc::clone(&store.0))
         .llm(Arc::clone(&state.llm))
         .resolve_ctx(Arc::new(state.resolve_context().clone()))
+        .with_global_tool_hook(audit_hook as Arc<dyn ToolHook>)
         .build();
 
     ChatDeps {
@@ -198,33 +223,6 @@ fn build_chat_stream(
         // with conversation_id injected so the frontend can route them.
         let per_request_signals = Arc::new(agtrs_runtime::signals::SignalBus::new());
         {
-            let conv_id = conversation_id.clone();
-            let ws_tx = deps.signal_bus.sender();
-            per_request_signals
-                .on::<agtrs_sig::ToolCallStarted>(move |e| {
-                    let _ = ws_tx.send(AppSignal::ToolCallStarted {
-                        tool_name: e.tool_name.clone(),
-                        tool_use_id: e.tool_use_id.clone(),
-                        conversation_id: conv_id.clone(),
-                    });
-                })
-                .await;
-
-            let conv_id = conversation_id.clone();
-            let ws_tx = deps.signal_bus.sender();
-            per_request_signals
-                .on::<agtrs_sig::ToolCallComplete>(move |e| {
-                    let _ = ws_tx.send(AppSignal::ToolCallComplete {
-                        tool_name: e.tool_name.clone(),
-                        tool_use_id: e.tool_use_id.clone(),
-                        duration_ms: e.duration_ms as u64,
-                        success: e.success,
-                        error: e.error.clone(),
-                        conversation_id: conv_id.clone(),
-                    });
-                })
-                .await;
-
             let conv_id = conversation_id.clone();
             let ws_tx = deps.signal_bus.sender();
             per_request_signals
