@@ -28,7 +28,6 @@ use tower_http::trace::TraceLayer;
 
 // Bind the concrete LlmProvider implementation (compile-time inventory entry).
 // Must be in the same compilation unit as the #[injectable] types it references.
-use llm::OpenRouterProvider;
 
 /// Minimal application state — only holds things that cannot be resolved via
 /// `Inject<T>` (non-`#[injectable]` trait objects and the DI container itself).
@@ -77,15 +76,20 @@ pub async fn build_app_state() -> AppState {
     let agent_store_dyn = Arc::clone(&agent_store);
 
     let container = Container::builder()
-        .register(DynProvider::<Arc<InMemoryConversationStore>>::sync(
-            move || Ok(Arc::clone(&conv_store_dyn)),
-        ))
-        .register(DynProvider::<Arc<CostTracker>>::sync(move || {
-            Ok(Arc::clone(&cost_tracker_dyn))
-        }))
-        .register(DynProvider::<Arc<HandoffAgentStore>>::sync(move || {
-            Ok(Arc::clone(&agent_store_dyn))
-        }))
+        .register(
+            "",
+            DynProvider::<Arc<InMemoryConversationStore>>::sync(move || {
+                Ok(Arc::clone(&conv_store_dyn))
+            }),
+        )
+        .register(
+            "",
+            DynProvider::<Arc<CostTracker>>::sync(move || Ok(Arc::clone(&cost_tracker_dyn))),
+        )
+        .register(
+            "",
+            DynProvider::<Arc<HandoffAgentStore>>::sync(move || Ok(Arc::clone(&agent_store_dyn))),
+        )
         .build()
         .await
         .expect("DI container failed to build — check injectable bindings");
@@ -143,10 +147,9 @@ pub mod test_utils {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
-    use config::AppConfig;
+    use crate::config::AppConfig;
 
     #[tokio::test]
     async fn test_build_app_state() {

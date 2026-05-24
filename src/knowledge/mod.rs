@@ -1,6 +1,5 @@
 use serde_json::Value;
 use std::collections::HashMap;
-
 /// Public knowledge base containing banking product information.
 pub struct PublicKnowledgeBase {
     documents: Vec<Document>,
@@ -67,9 +66,8 @@ pub struct Document {
     pub metadata: HashMap<String, Value>,
 }
 
-#[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::knowledge::PublicKnowledgeBase;
 
     #[test]
     fn test_knowledge_base_creation() {

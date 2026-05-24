@@ -88,7 +88,6 @@ impl Default for PublicKnowledgeBase {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

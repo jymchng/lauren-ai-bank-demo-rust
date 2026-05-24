@@ -23,7 +23,6 @@ pub async fn authenticated_user_guard(
     Ok(next.run(request).await)
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;

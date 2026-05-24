@@ -50,7 +50,6 @@ impl CryptoService {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -28,7 +28,6 @@ impl EventForwarder {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -304,7 +304,6 @@ pub fn chat_router() -> axum::Router<AppState> {
         )
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::chat::schemas::{ChatMessage, ChatRequest};
@@ -343,6 +342,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_chat_public_endpoint() {
         let app = create_test_app().await;
         let body = serde_json::json!({"messages":[{"role":"user","content":"Hello"}],"conversation_id":"test-conv"});
@@ -361,6 +361,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_chat_authenticated_endpoint_without_user_id() {
         let app = create_test_app().await;
         let body = serde_json::json!({"messages":[{"role":"user","content":"What's my balance?"}]});
@@ -379,6 +380,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_chat_authenticated_endpoint_with_user_id() {
         let app = create_test_app().await;
         let body = serde_json::json!({"messages":[{"role":"user","content":"What's my balance?"}],"user_id":"alice","conversation_id":"test-auth"});

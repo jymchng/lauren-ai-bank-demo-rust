@@ -76,7 +76,6 @@ impl Transaction {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

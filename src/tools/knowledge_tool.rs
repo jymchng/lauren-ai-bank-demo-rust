@@ -78,7 +78,6 @@ impl Tool for SearchPublicInfoTool {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

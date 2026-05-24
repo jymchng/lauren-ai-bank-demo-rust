@@ -23,7 +23,6 @@ pub async fn timing_middleware(request: Request<Body>, next: Next) -> Response {
     response
 }
 
-#[cfg(test)]
 mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};

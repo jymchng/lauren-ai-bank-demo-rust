@@ -47,7 +47,6 @@ pub async fn create_public_ws_token(
     }))
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

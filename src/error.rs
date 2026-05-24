@@ -51,7 +51,6 @@ impl From<std::io::Error> for AppError {
 #[derive(Debug, Clone)]
 pub struct UserIdExtension(pub String);
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::StatusCode;

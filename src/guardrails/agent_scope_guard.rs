@@ -18,8 +18,7 @@ const BLOCKED_KEYWORDS: &[&str] = &[
     "social_security",
     "ssn",
     "credit_card_number",
-    "pin_number",
-];
+    "pin_number",;
 
 /// A keyword-based output guardrail that blocks responses containing
 /// sensitive information.
@@ -114,7 +113,6 @@ impl Guardrail for AgentScopeGuard {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use agtrs::agtrs_runtime::transport::TokenUsage;

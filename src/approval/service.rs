@@ -115,7 +115,6 @@ impl ApprovalService {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

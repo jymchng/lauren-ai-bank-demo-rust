@@ -28,7 +28,6 @@ pub async fn logging_middleware(request: Request, next: Next) -> Response {
     response
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;

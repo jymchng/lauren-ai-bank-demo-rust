@@ -172,10 +172,9 @@ impl Guardrail for AgentScopeGuard {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
-    use agtrs::agtrs_runtime::transport::{Message, Role, StopReason, TokenUsage};
+    use agtrs::agtrs_runtime::transport::{Message, StopReason, TokenUsage};
 
     fn make_response(text: &str) -> LlmResponse {
         LlmResponse {

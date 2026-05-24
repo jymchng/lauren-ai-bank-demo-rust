@@ -11,9 +11,7 @@ pub fn health_router() -> axum::Router<crate::AppState> {
     axum::Router::new().route("/api/health", axum::routing::get(health))
 }
 
-#[cfg(test)]
 mod tests {
-    use super::*;
     use crate::test_utils::create_test_app;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};

@@ -8,7 +8,6 @@ pub fn cors_layer() -> CorsLayer {
         .allow_headers(Any)
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

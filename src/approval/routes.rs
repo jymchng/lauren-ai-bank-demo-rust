@@ -30,7 +30,6 @@ pub fn approval_router() -> axum::Router<AppState> {
     axum::Router::new().route("/api/banking/approval", axum::routing::post(respond))
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::create_test_app;

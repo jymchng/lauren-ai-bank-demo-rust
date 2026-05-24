@@ -31,7 +31,6 @@ pub fn stream_event_to_sse(event: &StreamEvent) -> Option<Event> {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use agtrs_runtime::transport::{StopReason, TokenUsage};

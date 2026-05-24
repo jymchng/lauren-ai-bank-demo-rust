@@ -56,7 +56,6 @@ pub fn metrics_router() -> axum::Router<AppState> {
         .route("/api/metrics/cost", axum::routing::get(cost))
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::{create_test_app, create_test_state};

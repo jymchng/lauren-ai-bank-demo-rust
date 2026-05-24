@@ -128,7 +128,6 @@ impl Default for AppSignalBus {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

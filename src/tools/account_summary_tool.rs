@@ -40,7 +40,6 @@ impl AccountSummaryTool {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use agtrs::prelude::*;

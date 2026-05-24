@@ -137,7 +137,6 @@ impl Default for BankDatabase {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

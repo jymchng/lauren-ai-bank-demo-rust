@@ -206,7 +206,6 @@ impl Tool for HandoffToAuthenticatedCrmTool {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::create_test_state;

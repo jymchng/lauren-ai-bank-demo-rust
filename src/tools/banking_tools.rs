@@ -195,7 +195,6 @@ impl GetTransactionHistoryTool {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::signals::bus::AppSignalBus;
@@ -257,6 +256,7 @@ mod tests {
     // ── GetBalanceTool ──────────────────────────────────────────────────────
 
     #[tokio::test]
+
     async fn test_get_balance_authenticated() {
         let tool = GetBalanceTool { db: make_db() };
         let ctx = make_ctx("alice");
@@ -266,6 +266,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_get_balance_unauthenticated() {
         // Inline auth check removed — hooks enforce this; test via execute_with_hooks.
         let tool = GetBalanceTool { db: make_db() };
@@ -279,6 +280,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_get_balance_mismatched_user_id() {
         // IDOR guard is in the hook — test via execute_with_hooks.
         let tool = GetBalanceTool { db: make_db() };
@@ -293,6 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_get_balance_unknown_user() {
         let tool = GetBalanceTool { db: make_db() };
         let ctx = make_ctx("unknown");
@@ -307,6 +310,7 @@ mod tests {
     // ── TransferFundsTool ───────────────────────────────────────────────────
 
     #[tokio::test]
+
     async fn test_transfer_funds_without_approval() {
         let tool = TransferFundsTool {
             db: make_db(),
@@ -326,6 +330,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_transfer_funds_with_approval() {
         let (tool, ctx) = make_transfer_tool_with_approval("bob", 100.0).await;
         let result = tool
@@ -340,6 +345,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_transfer_funds_unauthenticated() {
         let tool = TransferFundsTool {
             db: make_db(),
@@ -360,6 +366,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_transfer_funds_mismatched_user_id() {
         let tool = TransferFundsTool {
             db: make_db(),
@@ -382,6 +389,7 @@ mod tests {
     // ── GetTransactionHistoryTool ───────────────────────────────────────────
 
     #[tokio::test]
+
     async fn test_transaction_history_no_transactions() {
         let tool = GetTransactionHistoryTool { db: make_db() };
         let ctx = make_ctx("alice");
@@ -391,6 +399,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_transaction_history_unauthenticated() {
         let tool = GetTransactionHistoryTool { db: make_db() };
         let ctx = make_ctx("");
@@ -400,6 +409,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_transaction_history_mismatched_user_id() {
         let tool = GetTransactionHistoryTool { db: make_db() };
         let ctx = make_ctx("alice");

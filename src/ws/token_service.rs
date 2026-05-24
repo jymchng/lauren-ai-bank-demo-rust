@@ -102,9 +102,9 @@ impl WsTokenService {
     }
 }
 
-#[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::config::AppConfig;
+    use crate::ws::token_service::WsTokenService;
 
     #[test]
     fn test_create_and_verify_token() {

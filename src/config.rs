@@ -44,7 +44,6 @@ impl AppConfig {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

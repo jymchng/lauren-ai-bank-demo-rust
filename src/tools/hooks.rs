@@ -228,7 +228,6 @@ impl ToolHook for AuditLogHook {
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use agtrs_runtime::agent::{AgentConfig, AgentContext};
@@ -279,6 +278,7 @@ mod tests {
     // ── AuthRequiredHook ──────────────────────────────────────────────────────
 
     #[tokio::test]
+
     async fn auth_hook_passes_when_user_authenticated() {
         let hook = AuthRequiredHook;
         let ctx = tool_call_ctx(
@@ -295,6 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn auth_hook_blocks_when_no_user_extension() {
         let hook = AuthRequiredHook;
         let ctx = tool_call_ctx("test", json!({}), make_ctx_with_user(""), make_agent_ctx());
@@ -309,6 +310,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn auth_hook_after_always_passes() {
         let hook = AuthRequiredHook;
         let tool_ctx = make_ctx_with_user("alice");
@@ -330,6 +332,7 @@ mod tests {
     // ── IdorGuardHook ─────────────────────────────────────────────────────────
 
     #[tokio::test]
+
     async fn idor_hook_passes_when_user_ids_match() {
         let hook = IdorGuardHook {
             user_id_field: "user_id",
@@ -348,6 +351,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn idor_hook_blocks_when_user_ids_mismatch() {
         let hook = IdorGuardHook {
             user_id_field: "user_id",
@@ -375,6 +379,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn idor_hook_blocks_when_no_extension() {
         let hook = IdorGuardHook {
             user_id_field: "user_id",
@@ -396,6 +401,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn idor_hook_passes_when_input_user_id_absent() {
         // Tool doesn't pass user_id (no field to compare) — hook lets it through.
         let hook = IdorGuardHook {
@@ -432,6 +438,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn audit_hook_emits_tool_call_started_with_user_identity() {
         let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
         // Pre-extract to populate singleton cache; subscribe to observe signals.
@@ -462,6 +469,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn audit_hook_emits_tool_call_complete_after_success() {
         let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
         let bus = resolve_ctx.extract::<Inject<AppSignalBus>>().await.unwrap();
@@ -502,6 +510,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn audit_hook_emits_failure_signal_on_tool_error() {
         let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
         let bus = resolve_ctx.extract::<Inject<AppSignalBus>>().await.unwrap();
@@ -532,6 +541,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn audit_hook_records_correct_conversation_id_regardless_of_user() {
         let resolve_ctx = Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore)));
         let bus = resolve_ctx.extract::<Inject<AppSignalBus>>().await.unwrap();
@@ -558,6 +568,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn audit_hook_proceeds_silently_in_empty_context() {
         // With a fresh context that has no pre-cached bus, the hook creates an
         // isolated AppSignalBus (signals go nowhere) and still proceeds.
@@ -579,6 +590,7 @@ mod tests {
     // ── Hook composition: AuthRequired + IdorGuard run in sequence ────────────
 
     #[tokio::test]
+
     async fn composed_hooks_both_pass_for_correct_user() {
         let agent_ctx = make_agent_ctx();
         let tool_ctx = make_ctx_with_user("alice");
@@ -605,6 +617,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn auth_hook_short_circuits_before_idor_check() {
         // AuthRequired fires first; IDOR would never run for unauthenticated requests.
         let hook = AuthRequiredHook;

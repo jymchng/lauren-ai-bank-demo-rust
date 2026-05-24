@@ -47,7 +47,6 @@ pub async fn signature_guard(
     Ok(next.run(new_request).await)
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::service::CryptoService;

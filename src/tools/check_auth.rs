@@ -49,7 +49,6 @@ impl Tool for CheckAuthenticationTool {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use injectable::prelude::*;

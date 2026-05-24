@@ -44,7 +44,6 @@ pub struct ChatResponse {
     pub turns: usize,
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
 

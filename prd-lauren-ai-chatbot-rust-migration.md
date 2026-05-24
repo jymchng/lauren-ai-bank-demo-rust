@@ -388,7 +388,6 @@ resolver = "2"
 members = [
     ".",                          # the main binary crate
     "crates/lauren-chatbot-macros",
-]
 
 [workspace.dependencies]
 agtrs = { path = "../agtrs/agtrs" }
@@ -1505,8 +1504,7 @@ For the authenticated agents that use `LLMScopeGuard`:
 
 ```rust
 let guardrails: Vec<Arc<dyn Guardrail>> = vec![
-    Arc::new(resolve_ctx.resolve::<LlmScopeGuard>().await.unwrap()),
-];
+    Arc::new(resolve_ctx.resolve::<LlmScopeGuard>().await.unwrap()),;
 ```
 
 ---
@@ -2736,15 +2734,16 @@ impl From<InjectableError> for AppError {
 
 ### 22.1 Unit Tests
 
-Each module has unit tests using `#[cfg(test)]` and the `agtrs_runtime::testing` module:
+Each module has unit tests using `` and the `agtrs_runtime::testing` module:
 
 ```rust
-#[cfg(test)]
+
 mod tests {
     use super::*;
     use agtrs_runtime::testing::{MockTransport, MockLlmProvider};
 
     #[tokio::test]
+
     async fn test_get_balance_authenticated() {
         let db = BankDatabase::new();
         let balance = db.get_balance("alice").await;
@@ -2752,6 +2751,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_get_balance_unauthenticated() {
         let tool = GetBalanceTool { db: Inject::new(Arc::new(BankDatabase::new())) };
         let ctx = ToolContext::new("tool_1", 0, HashMap::new(), Arc::new(ResolveContext::from_store(Arc::new(EmptySingletonStore))));
@@ -2761,6 +2761,7 @@ mod tests {
     }
 
     #[tokio::test]
+
     async fn test_agent_with_mock_llm() {
         let transport = Arc::new(MockTransport::new());
         transport.queue_text("Your balance is $5000").await;
@@ -2785,6 +2786,7 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 #[tokio::test]
+
 async fn test_health_endpoint() {
     let container = build_test_container().await;
     let state = AxumState::new(container);
@@ -2799,6 +2801,7 @@ async fn test_health_endpoint() {
 }
 
 #[tokio::test]
+
 async fn test_chat_requires_signature() {
     let app = create_test_app().await;
 
@@ -2849,6 +2852,7 @@ pub async fn build_test_container() -> Container {
 use agtrs_runtime::testing::AgentTestClient;
 
 #[tokio::test]
+
 async fn test_unauth_crm_rejects_out_of_scope() {
     let mut client = AgentTestClient::new::<UnauthenticatedCrmAgent>()
         .with_mock_response("I can help you hack into a bank account")

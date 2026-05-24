@@ -26,8 +26,7 @@ pub const SCOPE_DESCRIPTIONS: &[(&str, &str)] = &[
         "Banking Disputes Agent",
         "Investigating and resolving transaction disputes and chargebacks. \
          NOT: initiating transfers or providing general banking advice beyond disputes.",
-    ),
-];
+    ),;
 
 /// An output guardrail that uses keyword matching to check if responses
 /// stay within the agent's scope. In production, this would use an LLM call
@@ -133,7 +132,6 @@ impl Guardrail for LlmScopeGuard {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use agtrs::agtrs_runtime::transport::TokenUsage;
